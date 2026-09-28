@@ -85,7 +85,7 @@ fn selected_html5lib_tree_construction_cases() {
     check_cases(
         "tables01.dat",
         include_str!("fixtures/tables01.dat"),
-        &[1, 2, 5, 6, 11, 12, 14, 15, 16, 19],
+        &[1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15, 16, 19],
     );
 }
 
@@ -146,6 +146,7 @@ fn preserves_input_and_nesting_limits() {
     assert!(html::parse(&"<div>".repeat(255)).is_err());
     assert!(html::parse(&"<div>".repeat(254)).is_ok());
     assert!(html::parse(&format!("{}<table><td>", "<div>".repeat(251))).is_err());
+    assert!(html::parse(&format!("{}<table><caption><p>", "<div>".repeat(252))).is_err());
 }
 
 #[test]
@@ -209,5 +210,57 @@ fn fostered_text_and_elements_precede_the_table() {
     assert_eq!(
         dump(&html::parse("<table><p>one</p><tr><td>two").unwrap()),
         "| <html>\n|   <head>\n|   <body>\n|     <p>\n|       \"one\"\n|     <table>\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"two\""
+    );
+}
+
+#[test]
+fn column_groups_keep_attributes_whitespace_and_transition_to_rows() {
+    assert_eq!(
+        dump(&html::parse("<table><colgroup span=2> \n<!--gap--><col span=2><col class=x></col><tr><td>R</table>").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <colgroup>\n|         span=\"2\"\n|         \" \n\"\n|         <!-- gap -->\n|         <col>\n|           span=\"2\"\n|         <col>\n|           class=\"x\"\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"R\""
+    );
+    assert_eq!(
+        dump(&html::parse("<table><col id=a><col id=b><tbody><tr><td>X").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <colgroup>\n|         <col>\n|           id=\"a\"\n|         <col>\n|           id=\"b\"\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"X\""
+    );
+}
+
+#[test]
+fn malformed_column_group_endings_and_text_use_table_recovery() {
+    assert_eq!(
+        dump(&html::parse("<table><colgroup></col> \nX</caption><tr><td>Y</table>").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     \"X\"\n|     <table>\n|       <colgroup>\n|         \" \n\"\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"Y\""
+    );
+    assert_eq!(
+        dump(&html::parse("<table><colgroup><col></colgroup><tr><td>Z").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <colgroup>\n|         <col>\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"Z\""
+    );
+}
+
+#[test]
+fn caption_content_closes_before_columns_sections_and_rows() {
+    assert_eq!(
+        dump(&html::parse("<table><caption><p>Title <em>now</em><tr><td>First</table>").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <caption>\n|         <p>\n|           \"Title \"\n|           <em>\n|             \"now\"\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"First\""
+    );
+    assert_eq!(
+        dump(&html::parse("<table><caption>Head<col span=3><thead><tr><th>H</table>").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <caption>\n|         \"Head\"\n|       <colgroup>\n|         <col>\n|           span=\"3\"\n|       <thead>\n|         <tr>\n|           <th>\n|             \"H\""
+    );
+    assert_eq!(
+        dump(&html::parse("<table><colgroup><col><caption>Note</table><p>After").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <colgroup>\n|         <col>\n|       <caption>\n|         \"Note\"\n|     <p>\n|       \"After\""
+    );
+}
+
+#[test]
+fn malformed_caption_endings_and_eof_preserve_tree_shape() {
+    assert_eq!(
+        dump(&html::parse("<table><caption><p>A</colgroup></td></caption><tr><td>B").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <caption>\n|         <p>\n|           \"A\"\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"B\""
+    );
+    assert_eq!(
+        dump(&html::parse("<table><caption>Open").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <caption>\n|         \"Open\""
     );
 }

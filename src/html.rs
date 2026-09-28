@@ -15,6 +15,8 @@ enum InsertionMode {
     Text,
     InTable,
     InTableText,
+    InCaption,
+    InColumnGroup,
     InTableBody,
     InRow,
     InCell,
@@ -357,6 +359,8 @@ impl TreeBuilder {
                 "td" | "th" => Some(InsertionMode::InCell),
                 "tr" => Some(InsertionMode::InRow),
                 "tbody" | "thead" | "tfoot" => Some(InsertionMode::InTableBody),
+                "caption" => Some(InsertionMode::InCaption),
+                "colgroup" => Some(InsertionMode::InColumnGroup),
                 "table" => Some(InsertionMode::InTable),
                 "body" => Some(InsertionMode::InBody),
                 _ => None,
@@ -387,6 +391,23 @@ impl TreeBuilder {
         self.clear_to(&["tbody", "thead", "tfoot", "template", "html"]);
         if matches!(self.name(self.current()), "tbody" | "thead" | "tfoot") {
             self.open.pop();
+            self.mode = InsertionMode::InTable;
+        }
+    }
+
+    fn generate_implied_end_tags(&mut self) {
+        while matches!(
+            self.name(self.current()),
+            "dd" | "dt" | "li" | "optgroup" | "option" | "p" | "rb" | "rp" | "rt" | "rtc"
+        ) {
+            self.open.pop();
+        }
+    }
+
+    fn close_caption(&mut self) {
+        self.generate_implied_end_tags();
+        if let Some(index) = self.position("caption") {
+            self.open.truncate(index);
             self.mode = InsertionMode::InTable;
         }
     }
@@ -574,6 +595,24 @@ impl TreeBuilder {
                 Ok(false)
             }
             Token::Doctype(_) => Ok(false),
+            Token::StartTag(tag) if tag.name == "caption" => {
+                self.clear_to(&["table", "template", "html"]);
+                self.insert(tag)?;
+                self.mode = InsertionMode::InCaption;
+                Ok(false)
+            }
+            Token::StartTag(tag) if tag.name == "colgroup" => {
+                self.clear_to(&["table", "template", "html"]);
+                self.insert(tag)?;
+                self.mode = InsertionMode::InColumnGroup;
+                Ok(false)
+            }
+            Token::StartTag(tag) if tag.name == "col" => {
+                self.clear_to(&["table", "template", "html"]);
+                self.insert(&implied_tag("colgroup"))?;
+                self.mode = InsertionMode::InColumnGroup;
+                Ok(true)
+            }
             Token::StartTag(tag) if matches!(tag.name.as_str(), "tbody" | "thead" | "tfoot") => {
                 self.clear_to(&["table", "template", "html"]);
                 self.insert(tag)?;
@@ -637,6 +676,109 @@ impl TreeBuilder {
             }
             Token::Eof => Ok(false),
             _ => self.process_in_body(token, tokenizer, true),
+        }
+    }
+
+    fn process_in_caption(
+        &mut self,
+        token: &Token,
+        tokenizer: &mut Tokenizer,
+    ) -> Result<bool, Error> {
+        match token {
+            Token::EndTag(tag) if tag.name == "caption" => {
+                if self.in_table_scope("caption") {
+                    self.close_caption();
+                }
+                Ok(false)
+            }
+            Token::StartTag(tag)
+                if matches!(
+                    tag.name.as_str(),
+                    "caption"
+                        | "col"
+                        | "colgroup"
+                        | "tbody"
+                        | "td"
+                        | "tfoot"
+                        | "th"
+                        | "thead"
+                        | "tr"
+                ) =>
+            {
+                if self.in_table_scope("caption") {
+                    self.close_caption();
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Token::EndTag(tag) if tag.name == "table" => {
+                if self.in_table_scope("caption") {
+                    self.close_caption();
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Token::EndTag(tag)
+                if matches!(
+                    tag.name.as_str(),
+                    "body"
+                        | "col"
+                        | "colgroup"
+                        | "html"
+                        | "tbody"
+                        | "td"
+                        | "tfoot"
+                        | "th"
+                        | "thead"
+                        | "tr"
+                ) =>
+            {
+                Ok(false)
+            }
+            _ => self.process_in_body(token, tokenizer, false),
+        }
+    }
+
+    fn process_in_column_group(
+        &mut self,
+        token: &Token,
+        tokenizer: &mut Tokenizer,
+    ) -> Result<bool, Error> {
+        match token {
+            Token::Character(text) if text.chars().all(html_space) => {
+                self.insert_text(text);
+                Ok(false)
+            }
+            Token::Comment(data) => {
+                self.document
+                    .append(self.current(), NodeKind::Comment(data.clone()));
+                Ok(false)
+            }
+            Token::Doctype(_) => Ok(false),
+            Token::StartTag(tag) if tag.name == "html" => {
+                self.process_in_body(token, tokenizer, false)
+            }
+            Token::StartTag(tag) if tag.name == "col" => {
+                self.insert(tag)?;
+                Ok(false)
+            }
+            Token::EndTag(tag) if tag.name == "colgroup" => {
+                if self.name(self.current()) == "colgroup" {
+                    self.open.pop();
+                    self.mode = InsertionMode::InTable;
+                }
+                Ok(false)
+            }
+            Token::EndTag(tag) if tag.name == "col" => Ok(false),
+            Token::Eof => self.process_in_body(token, tokenizer, false),
+            _ if self.name(self.current()) == "colgroup" => {
+                self.open.pop();
+                self.mode = InsertionMode::InTable;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 
@@ -830,6 +972,14 @@ impl TreeBuilder {
                         token = Token::Character(rest.into());
                         continue;
                     }
+                    InsertionMode::InColumnGroup if !spaces.is_empty() => {
+                        self.insert_text(spaces);
+                        if rest.is_empty() {
+                            return Ok(());
+                        }
+                        token = Token::Character(rest.into());
+                        continue;
+                    }
                     _ => {}
                 }
             }
@@ -959,6 +1109,8 @@ impl TreeBuilder {
                 },
                 InsertionMode::InBody => self.process_in_body(&token, tokenizer, false)?,
                 InsertionMode::InTable => self.process_in_table(&token, tokenizer)?,
+                InsertionMode::InCaption => self.process_in_caption(&token, tokenizer)?,
+                InsertionMode::InColumnGroup => self.process_in_column_group(&token, tokenizer)?,
                 InsertionMode::InTableText => match &token {
                     Token::Character(text) => {
                         self.pending_table_text
