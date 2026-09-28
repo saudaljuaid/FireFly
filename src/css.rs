@@ -175,12 +175,26 @@ pub fn parse(source: &str) -> Stylesheet {
     let clean = strip_comments(source);
     let mut remaining = clean.as_str();
     let mut rules = Vec::new();
-    while let Some(open) = remaining.find('{') {
-        let Some(close) = remaining[open + 1..].find('}') else {
+    loop {
+        remaining = remaining.trim_start();
+        if remaining.is_empty() {
+            break;
+        }
+        let Some(open) = remaining.find('{') else {
+            break;
+        };
+        if remaining.starts_with('@')
+            && let Some(semicolon) = remaining.find(';')
+            && semicolon < open
+        {
+            remaining = &remaining[semicolon + 1..];
+            continue;
+        }
+        let Some(close) = matching_brace(remaining, open) else {
             break;
         };
         let selector_text = remaining[..open].trim();
-        let body = &remaining[open + 1..open + 1 + close];
+        let body = &remaining[open + 1..close];
         if !selector_text.starts_with('@') {
             let selectors = selector_text
                 .split(',')
@@ -194,9 +208,46 @@ pub fn parse(source: &str) -> Stylesheet {
                 });
             }
         }
-        remaining = &remaining[open + 1 + close + 1..];
+        remaining = &remaining[close + 1..];
     }
     Stylesheet { rules }
+}
+
+fn matching_brace(source: &str, open: usize) -> Option<usize> {
+    let mut depth = 1;
+    let mut quote = None;
+    let mut escaped = false;
+    for (offset, character) in source[open + 1..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quote.is_some() && character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if Some(character) == quote {
+            quote = None;
+            continue;
+        }
+        if quote.is_none() && matches!(character, '\'' | '"') {
+            quote = Some(character);
+            continue;
+        }
+        if quote.is_none() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(open + 1 + offset);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -217,5 +268,14 @@ mod tests {
     fn skips_comments_and_unsupported_selectors() {
         let sheet = parse("/* note */ p:hover, .ok { color: blue; }");
         assert_eq!(sheet.rules[0].selectors.len(), 1);
+    }
+
+    #[test]
+    fn does_not_apply_rules_inside_unsupported_at_rules() {
+        let sheet = parse(
+            "@charset \"utf-8\"; @media print { h1 { color: red } p { color: blue } } h1 { color: green }",
+        );
+        assert_eq!(sheet.rules.len(), 1);
+        assert_eq!(sheet.rules[0].declarations[0].value, "green");
     }
 }

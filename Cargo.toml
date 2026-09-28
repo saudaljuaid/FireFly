@@ -5,6 +5,10 @@ edition = "2024"
 license = "Apache-2.0"
 description = "A browser engine built from first principles in Rust"
 
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+
 [lib]
 name = "phos"
 path = "src/lib.rs"

@@ -3,17 +3,17 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phos::{Error, render};
+use phos::{Error, render, render_url};
 
 struct Options {
-    input: PathBuf,
+    input: String,
     output: PathBuf,
     width: f32,
 }
 
 fn usage() -> &'static str {
-    "Usage: firefly <input.html> --output <output.svg> [--width <pixels>]\n\
-     Render a local HTML file with FireFly's early engine core."
+    "Usage: firefly <input.html|http(s)://url> --output <output.svg> [--width <pixels>]\n\
+     Render a local HTML file or web page with the Phos engine."
 }
 
 fn options() -> Result<Options, Error> {
@@ -39,7 +39,7 @@ fn options() -> Result<Options, Error> {
             _ if argument.starts_with('-') => {
                 return Err(Error::InvalidInput(format!("unknown option: {argument}")));
             }
-            _ if input.is_none() => input = Some(PathBuf::from(argument)),
+            _ if input.is_none() => input = Some(argument),
             _ => {
                 return Err(Error::InvalidInput(
                     "provide exactly one HTML input file".into(),
@@ -56,14 +56,33 @@ fn options() -> Result<Options, Error> {
 
 fn run() -> Result<(), Error> {
     let options = options()?;
-    let metadata = fs::metadata(&options.input)?;
-    if metadata.len() > 16 * 1024 * 1024 {
-        return Err(Error::InvalidInput(
-            "input exceeds the 16 MiB limit for this early renderer".into(),
-        ));
-    }
-    let html = fs::read_to_string(&options.input)?;
-    let svg = render(&html, options.width)?;
+    let remote = options
+        .input
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        || options
+            .input
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"));
+    let svg = if remote {
+        let page = render_url(&options.input, options.width)?;
+        println!(
+            "Loaded {} ({} stylesheets)",
+            page.url.as_string(),
+            page.stylesheets
+        );
+        for warning in &page.warnings {
+            eprintln!("firefly: {warning}");
+        }
+        page.svg
+    } else {
+        let input = PathBuf::from(&options.input);
+        let metadata = fs::metadata(&input)?;
+        if metadata.len() > 16 * 1024 * 1024 {
+            return Err(Error::InvalidInput("HTML input exceeds 16 MiB".into()));
+        }
+        render(&fs::read_to_string(input)?, options.width)?
+    };
     fs::write(&options.output, svg)?;
     println!("Rendered {}", options.output.display());
     Ok(())
