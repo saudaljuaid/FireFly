@@ -16,6 +16,8 @@ cargo run -- examples/welcome.html --output welcome.svg --width 900
 
 Open `welcome.svg` in an image viewer. The output comes from Phos's own document, style, layout, and paint code. The CLI accepts local UTF-8 files up to 16 MiB. The width must be between 1 and 16,384 pixels.
 
+On Windows with the MSVC Rust target, building also requires the Visual Studio C++ Build Tools linker. WSL with a Linux Rust toolchain works as another development environment.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
