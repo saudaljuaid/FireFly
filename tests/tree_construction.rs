@@ -34,7 +34,8 @@ fn dump(document: &Document) -> String {
 }
 
 fn check_cases(group: &str, data: &str, numbers: &[usize]) {
-    let cases: Vec<_> = data.split("#data\n").skip(1).collect();
+    let normalized = data.replace("\r\n", "\n");
+    let cases: Vec<_> = normalized.split("#data\n").skip(1).collect();
     assert_eq!(cases.len(), numbers.len(), "{group}");
     for (case, number) in cases.into_iter().zip(numbers) {
         let (input, rest) = case.split_once("\n#errors\n").unwrap();
@@ -80,6 +81,11 @@ fn selected_html5lib_tree_construction_cases() {
         "comments01.dat",
         include_str!("fixtures/comments01.dat"),
         &[1],
+    );
+    check_cases(
+        "tables01.dat",
+        include_str!("fixtures/tables01.dat"),
+        &[1, 2, 5, 6, 11, 12, 14, 15, 16, 19],
     );
 }
 
@@ -139,4 +145,69 @@ fn preserves_input_and_nesting_limits() {
     assert!(html::parse(&"x".repeat(16 * 1024 * 1024 + 1)).is_err());
     assert!(html::parse(&"<div>".repeat(255)).is_err());
     assert!(html::parse(&"<div>".repeat(254)).is_ok());
+    assert!(html::parse(&format!("{}<table><td>", "<div>".repeat(251))).is_err());
+}
+
+#[test]
+fn table_sections_rows_and_cells_are_explicit_or_implied() {
+    assert_eq!(
+        dump(&html::parse("<table><td>A<th>B<tr><td>C</table>").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"A\"\n|           <th>\n|             \"B\"\n|         <tr>\n|           <td>\n|             \"C\""
+    );
+    assert_eq!(
+        dump(
+            &html::parse(
+                "<table><thead><tr><th>H</thead><tbody><td>D</tbody><tfoot><tr><td>F</table>"
+            )
+            .unwrap()
+        ),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <thead>\n|         <tr>\n|           <th>\n|             \"H\"\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"D\"\n|       <tfoot>\n|         <tr>\n|           <td>\n|             \"F\""
+    );
+}
+
+#[test]
+fn table_end_tags_and_eof_recover_without_leaking_cell_state() {
+    assert_eq!(
+        dump(&html::parse("<table><tbody><tr><td>A</table><p>B").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"A\"\n|     <p>\n|       \"B\""
+    );
+    assert_eq!(
+        dump(&html::parse("<table><tr><td>A").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"A\""
+    );
+    assert_eq!(
+        dump(
+            &html::parse("<table><tr><td><table><td>inner</table>outer</td></tr></table>").unwrap()
+        ),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <tbody>\n|         <tr>\n|           <td>\n|             <table>\n|               <tbody>\n|                 <tr>\n|                   <td>\n|                     \"inner\"\n|             \"outer\""
+    );
+}
+
+#[test]
+fn buffered_table_text_stays_inside_only_when_all_whitespace() {
+    assert_eq!(
+        dump(&html::parse("<table> \n<tr><td>X</table>").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       \" \n\"\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"X\""
+    );
+    assert_eq!(
+        dump(&html::parse("<table> A&amp;B<tr><td>X</table>").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     \" A&B\"\n|     <table>\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"X\""
+    );
+}
+
+#[test]
+fn fostered_text_and_elements_precede_the_table() {
+    assert_eq!(
+        dump(
+            &html::parse(
+                "<div>before<table><div class=x>outside</div>tail<tr><td>inside</table>after"
+            )
+            .unwrap()
+        ),
+        "| <html>\n|   <head>\n|   <body>\n|     <div>\n|       \"before\"\n|       <div>\n|         class=\"x\"\n|         \"outside\"\n|       \"tail\"\n|       <table>\n|         <tbody>\n|           <tr>\n|             <td>\n|               \"inside\"\n|       \"after\""
+    );
+    assert_eq!(
+        dump(&html::parse("<table><p>one</p><tr><td>two").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <p>\n|       \"one\"\n|     <table>\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"two\""
+    );
 }

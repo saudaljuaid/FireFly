@@ -1,0 +1,174 @@
+#data
+<table><th>
+#errors
+(1,7): expected-doctype-but-got-start-tag
+(1,11): unexpected-cell-in-table-body
+(1,11): expected-closing-tag-but-got-eof
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <th>
+
+#data
+<table><td>
+#errors
+(1,7): expected-doctype-but-got-start-tag
+(1,11): unexpected-cell-in-table-body
+(1,11): expected-closing-tag-but-got-eof
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+
+#data
+<table></table><p>foo
+#errors
+(1,7): expected-doctype-but-got-start-tag
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|     <p>
+|       "foo"
+
+#data
+<table></body></caption></col></colgroup></html></tbody></td></tfoot></th></thead></tr><td>
+#errors
+(1,7): expected-doctype-but-got-start-tag
+(1,14): unexpected-end-tag
+(1,24): unexpected-end-tag
+(1,30): unexpected-end-tag
+(1,41): unexpected-end-tag
+(1,48): unexpected-end-tag
+(1,56): unexpected-end-tag
+(1,61): unexpected-end-tag
+(1,69): unexpected-end-tag
+(1,74): unexpected-end-tag
+(1,82): unexpected-end-tag
+(1,87): unexpected-end-tag
+(1,91): unexpected-cell-in-table-body
+(1,91): expected-closing-tag-but-got-eof
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+
+#data
+<table><td></body></caption></col></colgroup></html>foo
+#errors
+(1,7): expected-doctype-but-got-start-tag
+(1,11): unexpected-cell-in-table-body
+(1,18): unexpected-end-tag
+(1,28): unexpected-end-tag
+(1,34): unexpected-end-tag
+(1,45): unexpected-end-tag
+(1,52): unexpected-end-tag
+(1,55): expected-closing-tag-but-got-eof
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             "foo"
+
+#data
+<table><td>A</table>B
+#errors
+(1,7): expected-doctype-but-got-start-tag
+(1,11): unexpected-cell-in-table-body
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             "A"
+|     "B"
+
+#data
+<table><tr></body></caption></col></colgroup></html></td></th><td>foo
+#errors
+(1,7): expected-doctype-but-got-start-tag
+(1,18): unexpected-end-tag-in-table-row
+(1,28): unexpected-end-tag-in-table-row
+(1,34): unexpected-end-tag-in-table-row
+(1,45): unexpected-end-tag-in-table-row
+(1,52): unexpected-end-tag-in-table-row
+(1,57): unexpected-end-tag-in-table-row
+(1,62): unexpected-end-tag-in-table-row
+(1,69): expected-closing-tag-but-got-eof
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             "foo"
+
+#data
+<table><td><tr>
+#errors
+(1,7): expected-doctype-but-got-start-tag
+(1,11): unexpected-cell-in-table-body
+(1,15): eof-in-table
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|         <tr>
+
+#data
+<table><td><button><td>
+#errors
+(1,7): expected-doctype-but-got-start-tag
+(1,11): unexpected-cell-in-table-body
+(1,23): unexpected-cell-end-tag
+(1,23): expected-closing-tag-but-got-eof
+#document
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             <button>
+|           <td>
+
+#data
+<table>a<!doctype html>
+#errors
+(1,1): expected-doctype-but-got-start-tag
+(1,8): illegal-character-token
+(1,9): illegal-doctype
+(1,24): expected-closing-tag-but-got-eof
+#document
+| <html>
+|   <head>
+|   <body>
+|     "a"
+|     <table>

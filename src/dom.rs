@@ -69,13 +69,31 @@ impl Default for Document {
 
 impl Document {
     pub fn append(&mut self, parent: NodeId, kind: NodeKind) -> NodeId {
+        self.insert_before(parent, None, kind)
+    }
+
+    pub fn insert_before(
+        &mut self,
+        parent: NodeId,
+        reference: Option<NodeId>,
+        kind: NodeKind,
+    ) -> NodeId {
         let id = self.nodes.len();
         self.nodes.push(Node {
             kind,
             parent: Some(parent),
             children: Vec::new(),
         });
-        self.nodes[parent].children.push(id);
+        if let Some(reference) = reference {
+            let index = self.nodes[parent]
+                .children
+                .iter()
+                .rposition(|&child| child == reference)
+                .expect("reference node must belong to insertion parent");
+            self.nodes[parent].children.insert(index, id);
+        } else {
+            self.nodes[parent].children.push(id);
+        }
         id
     }
 
