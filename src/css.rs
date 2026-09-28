@@ -253,6 +253,7 @@ fn matching_brace(source: &str, open: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dom::NodeKind;
     use crate::html;
 
     #[test]
@@ -260,7 +261,12 @@ mod tests {
         let document =
             html::parse("<section id='app'><p class='lead hot'>Hello</p></section>").unwrap();
         let sheet = parse("section#app p.lead.hot { color: red; }");
-        assert!(sheet.rules[0].selectors[0].matches(&document, 2));
+        let paragraph = document
+            .nodes
+            .iter()
+            .position(|node| matches!(&node.kind, NodeKind::Element(element) if element.tag == "p"))
+            .unwrap();
+        assert!(sheet.rules[0].selectors[0].matches(&document, paragraph));
         assert_eq!(sheet.rules[0].selectors[0].specificity, (1, 2, 2));
     }
 

@@ -1,0 +1,11 @@
+#data
+FOO<!-- BAR -->BAZ
+#errors
+(1,3): expected-doctype-but-got-chars
+#document
+| <html>
+|   <head>
+|   <body>
+|     "FOO"
+|     <!--  BAR  -->
+|     "BAZ"

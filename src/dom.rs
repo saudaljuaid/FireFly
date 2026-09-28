@@ -1,6 +1,14 @@
 pub type NodeId = usize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Doctype {
+    pub name: Option<String>,
+    pub public_id: Option<String>,
+    pub system_id: Option<String>,
+    pub force_quirks: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attribute {
     pub name: String,
     pub value: String,
@@ -29,6 +37,8 @@ impl Element {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
     Document,
+    Doctype(Doctype),
+    Comment(String),
     Element(Element),
     Text(String),
 }

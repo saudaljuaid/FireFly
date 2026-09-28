@@ -334,7 +334,11 @@ mod tests {
         )
         .unwrap();
         let styles = compute(&document, &css::parse(&document.stylesheets()));
-        let paragraph = document.nodes[0].children[1];
+        let paragraph = document
+            .nodes
+            .iter()
+            .position(|node| matches!(&node.kind, NodeKind::Element(element) if element.tag == "p"))
+            .unwrap();
         assert_eq!(styles[paragraph].color, Color(0, 0, 255));
         assert_eq!(styles[paragraph].font_size, 20.0);
         assert_eq!(

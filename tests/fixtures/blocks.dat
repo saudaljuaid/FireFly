@@ -1,0 +1,57 @@
+#data
+<!doctype html><p>foo<address>bar<p>baz
+#errors
+(1,39): expected-closing-tag-but-got-eof
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <p>
+|       "foo"
+|     <address>
+|       "bar"
+|       <p>
+|         "baz"
+
+#data
+<!doctype html><address><p>foo</address>bar
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <address>
+|       <p>
+|         "foo"
+|     "bar"
+
+#data
+<!doctype html><p>foo<article>bar<p>baz
+#errors
+(1,39): expected-closing-tag-but-got-eof
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <p>
+|       "foo"
+|     <article>
+|       "bar"
+|       <p>
+|         "baz"
+
+#data
+<!doctype html><article><p>foo</article>bar
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <article>
+|       <p>
+|         "foo"
+|     "bar"

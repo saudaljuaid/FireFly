@@ -241,7 +241,7 @@ mod tests {
             "<style>.hidden { display:none }</style><div>alpha beta gamma</div><p class='hidden'>gone</p>",
         ).unwrap();
         let styles = style::compute(&document, &css::parse(&document.stylesheets()));
-        let scene = layout(&document, &styles, 60.0);
+        let scene = layout(&document, &styles, 76.0);
         let words: Vec<_> = scene
             .primitives
             .iter()

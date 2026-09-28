@@ -1,14 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use crate::dom::Attribute;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Doctype {
-    pub name: Option<String>,
-    pub public_id: Option<String>,
-    pub system_id: Option<String>,
-    pub force_quirks: bool,
-}
+pub use crate::dom::Doctype;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {
