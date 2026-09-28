@@ -1,0 +1,14 @@
+[package]
+name = "firefly"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "A browser engine built from first principles in Rust"
+
+[lib]
+name = "phos"
+path = "src/lib.rs"
+
+[[bin]]
+name = "firefly"
+path = "src/main.rs"
