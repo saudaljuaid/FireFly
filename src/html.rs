@@ -137,9 +137,29 @@ fn is_special(name: &str) -> bool {
         )
 }
 
+fn is_formatting(name: &str) -> bool {
+    matches!(
+        name,
+        "a" | "b"
+            | "big"
+            | "code"
+            | "em"
+            | "font"
+            | "i"
+            | "nobr"
+            | "s"
+            | "small"
+            | "strike"
+            | "strong"
+            | "tt"
+            | "u"
+    )
+}
+
 struct TreeBuilder {
     document: Document,
     open: Vec<NodeId>,
+    active_formatting: Vec<Option<NodeId>>,
     mode: InsertionMode,
     original_mode: InsertionMode,
     html: Option<NodeId>,
@@ -155,6 +175,7 @@ impl TreeBuilder {
         Self {
             document: Document::default(),
             open: Vec::new(),
+            active_formatting: Vec::new(),
             mode: InsertionMode::Initial,
             original_mode: InsertionMode::Initial,
             html: None,
@@ -191,8 +212,7 @@ impl TreeBuilder {
         }
     }
 
-    fn insertion_location(&self) -> (NodeId, Option<NodeId>) {
-        let current = self.current();
+    fn insertion_location_for(&self, current: NodeId) -> (NodeId, Option<NodeId>) {
         if self.foster_parenting
             && matches!(
                 self.name(current),
@@ -204,6 +224,10 @@ impl TreeBuilder {
             return (parent, Some(table));
         }
         (current, None)
+    }
+
+    fn insertion_location(&self) -> (NodeId, Option<NodeId>) {
+        self.insertion_location_for(self.current())
     }
 
     fn insert_text(&mut self, text: &str) {
@@ -273,6 +297,200 @@ impl TreeBuilder {
             self.open.push(id);
         }
         Ok(id)
+    }
+
+    fn clone_element(&mut self, id: NodeId) -> NodeId {
+        let element = self
+            .document
+            .element(id)
+            .expect("formatting element")
+            .clone();
+        self.document.create_detached(NodeKind::Element(element))
+    }
+
+    fn last_active(&self, name: &str) -> Option<(usize, NodeId)> {
+        self.active_formatting
+            .iter()
+            .enumerate()
+            .rev()
+            .take_while(|(_, entry)| entry.is_some())
+            .find_map(|(index, entry)| {
+                let id = entry.expect("entry before marker");
+                (self.name(id) == name).then_some((index, id))
+            })
+    }
+
+    fn push_active(&mut self, id: NodeId) {
+        let element = self.document.element(id).expect("formatting element");
+        let mut attributes = element.attributes.clone();
+        attributes.sort_by(|a, b| (&a.name, &a.value).cmp(&(&b.name, &b.value)));
+        let mut identical = Vec::new();
+        for (index, entry) in self.active_formatting.iter().enumerate().rev() {
+            let Some(other) = entry else { break };
+            let other_element = self.document.element(*other).expect("formatting element");
+            if other_element.tag == element.tag
+                && other_element.attributes.len() == attributes.len()
+            {
+                let mut other_attributes = other_element.attributes.clone();
+                other_attributes.sort_by(|a, b| (&a.name, &a.value).cmp(&(&b.name, &b.value)));
+                if other_attributes == attributes {
+                    identical.push(index);
+                }
+            }
+        }
+        if identical.len() >= 3 {
+            self.active_formatting.remove(*identical.last().unwrap());
+        }
+        self.active_formatting.push(Some(id));
+    }
+
+    fn clear_active_to_marker(&mut self) {
+        while let Some(entry) = self.active_formatting.pop() {
+            if entry.is_none() {
+                break;
+            }
+        }
+    }
+
+    fn reconstruct_active(&mut self) -> Result<(), Error> {
+        let mut index = self.active_formatting.len();
+        while index > 0 {
+            let Some(id) = self.active_formatting[index - 1] else {
+                break;
+            };
+            if self.open.contains(&id) {
+                break;
+            }
+            index -= 1;
+        }
+        while index < self.active_formatting.len() {
+            let id = self.active_formatting[index].expect("reconstruction starts after marker");
+            let element = self.document.element(id).expect("formatting element");
+            let tag = Tag {
+                name: element.tag.clone(),
+                attributes: element.attributes.clone(),
+                self_closing: false,
+            };
+            let replacement = self.insert(&tag)?;
+            self.active_formatting[index] = Some(replacement);
+            index += 1;
+        }
+        Ok(())
+    }
+
+    fn in_scope(&self, id: NodeId) -> bool {
+        for &entry in self.open.iter().rev() {
+            if entry == id {
+                return true;
+            }
+            if matches!(
+                self.name(entry),
+                "applet"
+                    | "caption"
+                    | "html"
+                    | "marquee"
+                    | "object"
+                    | "table"
+                    | "td"
+                    | "template"
+                    | "th"
+            ) {
+                return false;
+            }
+        }
+        false
+    }
+
+    fn adoption_agency(&mut self, name: &str) {
+        if self.name(self.current()) == name
+            && !self.active_formatting.contains(&Some(self.current()))
+        {
+            self.open.pop();
+            return;
+        }
+        for _ in 0..8 {
+            let Some((formatting_index, formatting)) = self.last_active(name) else {
+                self.generic_end(name);
+                return;
+            };
+            let Some(open_index) = self.open.iter().position(|&id| id == formatting) else {
+                self.active_formatting.remove(formatting_index);
+                return;
+            };
+            if !self.in_scope(formatting) {
+                return;
+            }
+            let Some(furthest) = self.open[open_index + 1..]
+                .iter()
+                .copied()
+                .find(|&id| is_special(self.name(id)))
+            else {
+                self.open.truncate(open_index);
+                self.active_formatting.remove(formatting_index);
+                return;
+            };
+            let common_ancestor = self.open[open_index - 1];
+            let mut bookmark = formatting_index;
+            let mut last_node = furthest;
+            let mut stack_index = self.open.iter().position(|&id| id == furthest).unwrap();
+            let mut inner_count = 0;
+            while stack_index > open_index + 1 {
+                stack_index -= 1;
+                inner_count += 1;
+                let node = self.open[stack_index];
+                if inner_count > 3
+                    && let Some(index) = self
+                        .active_formatting
+                        .iter()
+                        .position(|&entry| entry == Some(node))
+                {
+                    self.active_formatting.remove(index);
+                    if index < bookmark {
+                        bookmark -= 1;
+                    }
+                }
+                let Some(active_index) = self
+                    .active_formatting
+                    .iter()
+                    .position(|&entry| entry == Some(node))
+                else {
+                    self.open.remove(stack_index);
+                    continue;
+                };
+                let replacement = self.clone_element(node);
+                self.active_formatting[active_index] = Some(replacement);
+                self.open[stack_index] = replacement;
+                if last_node == furthest {
+                    bookmark = active_index + 1;
+                }
+                self.document.move_before(last_node, replacement, None);
+                last_node = replacement;
+            }
+            let (parent, reference) = self.insertion_location_for(common_ancestor);
+            self.document.move_before(last_node, parent, reference);
+
+            let replacement = self.clone_element(formatting);
+            let children = self.document.nodes[furthest].children.clone();
+            for child in children {
+                self.document.move_before(child, replacement, None);
+            }
+            self.document.move_before(replacement, furthest, None);
+
+            let index = self
+                .active_formatting
+                .iter()
+                .position(|&entry| entry == Some(formatting))
+                .unwrap();
+            self.active_formatting.remove(index);
+            if index < bookmark {
+                bookmark -= 1;
+            }
+            self.active_formatting.insert(bookmark, Some(replacement));
+            let index = self.open.iter().position(|&id| id == formatting).unwrap();
+            self.open.remove(index);
+            let index = self.open.iter().position(|&id| id == furthest).unwrap();
+            self.open.insert(index + 1, replacement);
+        }
     }
 
     fn merge_attributes(&mut self, id: NodeId, attributes: &[Attribute]) {
@@ -375,6 +593,7 @@ impl TreeBuilder {
             .rposition(|&id| matches!(self.name(id), "td" | "th"))
         {
             self.open.truncate(index);
+            self.clear_active_to_marker();
             self.mode = InsertionMode::InRow;
         }
     }
@@ -408,6 +627,7 @@ impl TreeBuilder {
         self.generate_implied_end_tags();
         if let Some(index) = self.position("caption") {
             self.open.truncate(index);
+            self.clear_active_to_marker();
             self.mode = InsertionMode::InTable;
         }
     }
@@ -489,7 +709,42 @@ impl TreeBuilder {
                 if tag.name == "xmp" && self.p_in_button_scope() {
                     self.close_p();
                 }
+                if tag.name == "xmp" {
+                    self.reconstruct_active()?;
+                }
                 self.text_element(tag, self.current(), tokenizer)?;
+            }
+            "a" => {
+                if let Some((_, previous)) = self.last_active("a") {
+                    self.adoption_agency("a");
+                    self.active_formatting
+                        .retain(|entry| *entry != Some(previous));
+                    self.open.retain(|&id| id != previous);
+                }
+                self.reconstruct_active()?;
+                let id = self.insert(tag)?;
+                self.push_active(id);
+            }
+            "nobr" => {
+                self.reconstruct_active()?;
+                if let Some(index) = self.position("nobr")
+                    && self.in_scope(self.open[index])
+                {
+                    self.adoption_agency("nobr");
+                    self.reconstruct_active()?;
+                }
+                let id = self.insert(tag)?;
+                self.push_active(id);
+            }
+            name if is_formatting(name) => {
+                self.reconstruct_active()?;
+                let id = self.insert(tag)?;
+                self.push_active(id);
+            }
+            "applet" | "marquee" | "object" => {
+                self.reconstruct_active()?;
+                self.insert(tag)?;
+                self.active_formatting.push(None);
             }
             "li" => {
                 self.close_previous_li();
@@ -508,6 +763,9 @@ impl TreeBuilder {
             _ => {
                 if closes_p(&tag.name) && self.p_in_button_scope() {
                     self.close_p();
+                }
+                if !closes_p(&tag.name) || (is_void(&tag.name) && tag.name != "hr") {
+                    self.reconstruct_active()?;
                 }
                 self.insert(tag)?;
             }
@@ -535,7 +793,18 @@ impl TreeBuilder {
                 self.close_p();
             }
             "li" => self.close_block("li"),
+            name if is_formatting(name) => self.adoption_agency(name),
+            "applet" | "marquee" | "object" => {
+                if let Some(index) = self.position(name)
+                    && self.in_scope(self.open[index])
+                {
+                    self.generate_implied_end_tags();
+                    self.open.truncate(index);
+                    self.clear_active_to_marker();
+                }
+            }
             "br" => {
+                self.reconstruct_active()?;
                 self.insert(&implied_tag("br"))?;
             }
             name if closes_p(name) => self.close_block(name),
@@ -553,6 +822,9 @@ impl TreeBuilder {
         self.foster_parenting = foster;
         let result = match token {
             Token::Character(text) => {
+                if !text.is_empty() {
+                    self.reconstruct_active()?;
+                }
                 self.insert_text(text);
                 Ok(false)
             }
@@ -598,6 +870,7 @@ impl TreeBuilder {
             Token::StartTag(tag) if tag.name == "caption" => {
                 self.clear_to(&["table", "template", "html"]);
                 self.insert(tag)?;
+                self.active_formatting.push(None);
                 self.mode = InsertionMode::InCaption;
                 Ok(false)
             }
@@ -844,6 +1117,7 @@ impl TreeBuilder {
             Token::StartTag(tag) if matches!(tag.name.as_str(), "td" | "th") => {
                 self.clear_to(&["tr", "template", "html"]);
                 self.insert(tag)?;
+                self.active_formatting.push(None);
                 self.mode = InsertionMode::InCell;
                 Ok(false)
             }

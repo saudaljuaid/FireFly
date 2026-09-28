@@ -68,6 +68,38 @@ impl Default for Document {
 }
 
 impl Document {
+    pub(crate) fn create_detached(&mut self, kind: NodeKind) -> NodeId {
+        let id = self.nodes.len();
+        self.nodes.push(Node {
+            kind,
+            parent: None,
+            children: Vec::new(),
+        });
+        id
+    }
+
+    pub(crate) fn move_before(&mut self, id: NodeId, parent: NodeId, reference: Option<NodeId>) {
+        if let Some(old_parent) = self.nodes[id].parent {
+            let old_index = self.nodes[old_parent]
+                .children
+                .iter()
+                .position(|&child| child == id)
+                .expect("node must belong to its parent");
+            self.nodes[old_parent].children.remove(old_index);
+        }
+        self.nodes[id].parent = Some(parent);
+        if let Some(reference) = reference {
+            let index = self.nodes[parent]
+                .children
+                .iter()
+                .position(|&child| child == reference)
+                .expect("reference node must belong to insertion parent");
+            self.nodes[parent].children.insert(index, id);
+        } else {
+            self.nodes[parent].children.push(id);
+        }
+    }
+
     pub fn append(&mut self, parent: NodeId, kind: NodeKind) -> NodeId {
         self.insert_before(parent, None, kind)
     }

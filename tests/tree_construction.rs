@@ -87,6 +87,82 @@ fn selected_html5lib_tree_construction_cases() {
         include_str!("fixtures/tables01.dat"),
         &[1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15, 16, 19],
     );
+    check_cases(
+        "adoption01.dat",
+        include_str!("fixtures/adoption01.dat"),
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16],
+    );
+    check_cases(
+        "adoption02.dat",
+        include_str!("fixtures/adoption02.dat"),
+        &[1, 2, 3, 4],
+    );
+}
+
+#[test]
+fn formatting_reconstructs_across_paragraphs_and_misnested_ends() {
+    assert_eq!(
+        dump(&html::parse("<p><b>one<p>two</b>three").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <p>\n|       <b>\n|         \"one\"\n|     <p>\n|       <b>\n|         \"two\"\n|       \"three\""
+    );
+    assert_eq!(
+        dump(&html::parse("<b>1<i>2</b>3</i>").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <b>\n|       \"1\"\n|       <i>\n|         \"2\"\n|     <i>\n|       \"3\""
+    );
+}
+
+#[test]
+fn nested_anchors_close_the_previous_active_anchor() {
+    assert_eq!(
+        dump(&html::parse("<a href=one>x<a href=two>y</a>z").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <a>\n|       href=\"one\"\n|       \"x\"\n|     <a>\n|       href=\"two\"\n|       \"y\"\n|     \"z\""
+    );
+}
+
+#[test]
+fn formatting_markers_keep_caption_and_cells_separate() {
+    assert_eq!(
+        dump(
+            &html::parse("<table><caption><b>cap</caption><tr><td><i>first<td>second</table>after")
+                .unwrap()
+        ),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <caption>\n|         <b>\n|           \"cap\"\n|       <tbody>\n|         <tr>\n|           <td>\n|             <i>\n|               \"first\"\n|           <td>\n|             \"second\"\n|     \"after\""
+    );
+    assert_eq!(
+        dump(&html::parse("<table><caption><b>open<tr><td>cell</table>").unwrap()),
+        "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <caption>\n|         <b>\n|           \"open\"\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"cell\""
+    );
+}
+
+#[test]
+fn repeated_identical_formatting_is_limited_and_resets_at_markers() {
+    let tree = dump(&html::parse("<p><b x=1 y=2><b y=2 x=1><b x=1 y=2><b y=2 x=1><p>x").unwrap());
+    let last_paragraph = tree.rsplit("|     <p>").next().unwrap();
+    assert_eq!(last_paragraph.matches("<b>").count(), 3);
+    assert!(last_paragraph.contains("\"x\""));
+    assert_eq!(
+        dump(&html::parse("<table><tr><td><b>x<td>y</table>").unwrap())
+            .matches("<b>")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn repeated_misnesting_keeps_the_arena_consistent() {
+    let input = "<b><i><p>x</b>y</i></p>".repeat(500);
+    let document = html::parse(&input).unwrap();
+    let mut seen = vec![false; document.nodes.len()];
+    fn walk(document: &Document, id: NodeId, seen: &mut [bool]) {
+        assert!(!seen[id], "node visited twice: {id}");
+        seen[id] = true;
+        for &child in &document.nodes[id].children {
+            assert_eq!(document.nodes[child].parent, Some(id));
+            walk(document, child, seen);
+        }
+    }
+    walk(&document, 0, &mut seen);
+    assert_eq!(dump(&document).matches("\"x\"").count(), 500);
 }
 
 #[test]
