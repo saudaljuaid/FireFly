@@ -186,3 +186,98 @@ fn repeated_prescan_and_eof_recovery_remain_bounded() {
         integrity(&fragment.document);
     }
 }
+
+#[test]
+fn late_meta_restarts_tentative_document_at_and_beyond_prescan_boundary() {
+    for start in [990, 999, 1000, 1010, 1023, 1024, 1100, 2048] {
+        for _ in 0..3 {
+            let mut input = vec![b' '; start];
+            input.extend_from_slice(b"<meta charset=latin1><p>Price \x80</p>");
+            let decoded = decode_html_bytes(&input, None).unwrap();
+            if start + b"<meta charset=latin1>".len() > 1024 {
+                assert_eq!(decoded.source, EncodingSource::Default);
+                assert!(decoded.text.ends_with("Price \u{fffd}</p>"));
+            }
+            let report = html::parse_bytes_with_errors(&input, None).unwrap();
+            integrity(&report.document);
+            assert!(text(&report.document).ends_with("Price €"), "start={start}");
+        }
+    }
+}
+
+#[test]
+fn late_meta_respects_certain_encoding_and_first_valid_declaration() {
+    let mut input = vec![b' '; 1040];
+    input.extend_from_slice(b"<meta charset=latin1><meta charset=utf-8><p>\x80");
+    for _ in 0..3 {
+        let document = html::parse_bytes(&input, None).unwrap();
+        integrity(&document);
+        assert!(text(&document).ends_with('€'));
+        let bom = [b"\xef\xbb\xbf".as_slice(), input.as_slice()].concat();
+        let document = html::parse_bytes(&bom, None).unwrap();
+        integrity(&document);
+        assert!(text(&document).ends_with('\u{fffd}'));
+        let document = html::parse_bytes(&input, Some("text/html; charset=utf-8")).unwrap();
+        integrity(&document);
+        assert!(text(&document).ends_with('\u{fffd}'));
+    }
+    let mut invalid = vec![b' '; 1040];
+    invalid.extend_from_slice(b"<meta charset=made-up><meta http-equiv=Content-Type content='text/html; charset=windows-1252'><p>\x80");
+    let document = html::parse_bytes(&invalid, None).unwrap();
+    integrity(&document);
+    assert!(text(&document).ends_with('€'));
+
+    let mut fallback = vec![b' '; 1040];
+    fallback.extend_from_slice(b"<meta charset=unknown http-equiv=Content-Type content='text/html; charset=latin1'><p>\x80");
+    let document = html::parse_bytes(&fallback, None).unwrap();
+    integrity(&document);
+    assert!(text(&document).ends_with('€'));
+
+    let utf16: Vec<u8> = "<?xml?><meta charset=windows-1252><p>Z"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    assert_eq!(
+        decode_html_bytes(&utf16, None).unwrap().encoding,
+        "UTF-16LE"
+    );
+    let document = html::parse_bytes(&utf16, None).unwrap();
+    integrity(&document);
+    assert!(text(&document).ends_with('Z'));
+}
+
+#[test]
+fn byte_fragments_and_decoded_strings_do_not_restart() {
+    let mut input = vec![b' '; 1040];
+    input.extend_from_slice(b"<meta charset=windows-1252><p>\x80");
+    let context = Element {
+        namespace: Namespace::Html,
+        tag: "div".into(),
+        attributes: Vec::new(),
+    };
+    let fragment = html::parse_fragment_bytes(&input, &context, None).unwrap();
+    integrity(&fragment);
+    assert!(text(&fragment).ends_with('\u{fffd}'));
+    let decoded = decode_html_bytes(&input, None).unwrap();
+    let string_document = html::parse(&decoded.text).unwrap();
+    integrity(&string_document);
+    assert!(text(&string_document).ends_with('\u{fffd}'));
+}
+
+#[test]
+fn late_meta_after_script_text_restarts_with_truncated_multibyte_input() {
+    for _ in 0..12 {
+        let mut input = b"<script>var marker = '<meta charset=utf-8>';</script>".to_vec();
+        input.resize(1040, b' ');
+        input.extend_from_slice(b"<meta charset=shift_jis><p>\x82\xa0\x82");
+        let report = html::parse_bytes_with_errors(&input, None).unwrap();
+        integrity(&report.document);
+        assert!(text(&report.document).ends_with("あ\u{fffd}"));
+        assert!(
+            report
+                .errors
+                .iter()
+                .all(|error| error.position.offset <= input.len())
+        );
+    }
+}

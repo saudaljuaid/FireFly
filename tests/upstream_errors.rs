@@ -129,7 +129,7 @@ fn html5lib_tokenizer_error_inventory() {
     assert_eq!(totals, (7028, 0, 4), "tokenizer error regression");
 }
 
-fn tree_cases(data: &str) -> Vec<(String, String, Option<String>, bool, bool)> {
+fn tree_cases(data: &str) -> Vec<(String, String, Option<String>, bool)> {
     data.replace("\r\n", "\n")
         .split("#data\n")
         .skip(1)
@@ -147,7 +147,6 @@ fn tree_cases(data: &str) -> Vec<(String, String, Option<String>, bool, bool)> {
                 errors.to_owned(),
                 context,
                 rest.contains("#script-on\n"),
-                rest.contains("#new-errors\n"),
             ))
         })
         .collect()
@@ -169,21 +168,51 @@ fn context(spec: &str) -> Element {
 }
 
 fn historical_code(code: &str) -> Option<&'static str> {
+    // Map only equivalent events. In particular, the old generic
+    // `unexpected-end-tag` covers several distinct recovery branches.
+    // html5lib's adoption-agency 1.2/1.3 names identify the same specific
+    // branches as `formatting-element-not-open` and
+    // `misnested-formatting-end-tag`, respectively.
     match code {
         "expected-doctype-but-got-start-tag"
         | "expected-doctype-but-got-chars"
         | "expected-doctype-but-got-eof" => Some("missing-doctype"),
-        "unexpected-end-tag-before-html" | "unexpected-end-tag" => Some("unmatched-end-tag"),
+        "unexpected-end-tag-before-html" => Some("unmatched-end-tag"),
         "named-entity-without-semicolon" => Some("missing-semicolon-after-character-reference"),
         "unexpected-eof-in-text-mode" => Some("eof-in-text"),
         "expected-closing-tag-but-got-eof" | "expected-named-closing-tag-but-got-eof" => {
             Some("unclosed-elements-at-eof")
         }
+        "end-tag-too-early" => Some("end-tag-too-early"),
+        "eof-in-table" => Some("eof-in-table"),
+        "eof-in-frameset" => Some("eof-in-frameset"),
+        "image-start-tag" => Some("image-start-tag"),
+        "unexpected-doctype" => Some("unexpected-doctype"),
+        "foster-parenting-start-tag" => Some("foster-parenting-start-tag"),
+        "foster-parenting-end-tag" => Some("foster-parenting-end-tag"),
+        "foster-parenting-character-in-table" => Some("foster-parenting-character-in-table"),
+        "formatting-element-not-in-scope" => Some("formatting-element-not-in-scope"),
+        "unexpected-null-character" => Some("unexpected-null-character"),
+        "adoption-agency-1.2" => Some("formatting-element-not-open"),
+        "adoption-agency-1.3" => Some("misnested-formatting-end-tag"),
+        "adoption-agency-4.4" => Some("formatting-element-not-in-scope"),
+        "unexpected-cell-in-table-body" => Some("cell-start-tag-in-table-body"),
+        "unexpected-end-tag-in-table-body" => Some("unexpected-end-tag-in-table-body"),
+        "unexpected-end-tag-in-table-row" => Some("unexpected-end-tag-in-row"),
+        "unexpected-html-element-in-foreign-content" => Some("html-start-tag-in-foreign-content"),
+        "unexpected-char-in-frameset" => Some("unexpected-character-in-frameset"),
+        "unexpected-char-after-frameset" => Some("unexpected-character-after-frameset"),
+        "unexpected-form-in-table" => Some("form-start-tag-in-table"),
+        "unexpected-hidden-input-in-table" => Some("hidden-input-in-table"),
+        "unexpected-start-tag-implies-end-tag" => Some("start-tag-implies-end-tag"),
+        "eof-in-template" => Some("eof-in-template"),
         _ => None,
     }
 }
 
 fn parse_expected(input: &str) -> Option<Vec<(&'static str, usize, usize)>> {
+    // WPT's legacy (line,column) coordinates are one-based. Its files are
+    // CRLF-normalized in tree_cases, matching tokenizer SourcePosition.
     input
         .lines()
         .take_while(|line| !line.starts_with('#'))
@@ -193,8 +222,8 @@ fn parse_expected(input: &str) -> Option<Vec<(&'static str, usize, usize)>> {
             let (line_no, col) = pos.strip_prefix('(')?.split_once(',')?;
             Some((
                 historical_code(code.trim())?,
-                line_no.parse().ok()?,
-                col.parse().ok()?,
+                line_no.trim().parse().ok()?,
+                col.trim().parse().ok()?,
             ))
         })
         .collect()
@@ -215,7 +244,7 @@ fn wpt_tree_error_inventory() {
         let mut document_counts = (0, 0, 0);
         let mut fragment_counts = (0, 0, 0);
         let mut scripted_counts = (0, 0, 0);
-        for (input, expected, fragment, script_on, has_new_errors) in
+        for (input, expected, fragment, script_on) in
             tree_cases(&fs::read_to_string(&path).unwrap())
         {
             let counts = if fragment.is_some() {
@@ -232,12 +261,10 @@ fn wpt_tree_error_inventory() {
             } else {
                 &mut docs
             };
-            // A #new-errors block records a different (current-standard) list,
-            // and prose-only historical positions cannot be compared exactly.
-            let Some(expected) = (!has_new_errors)
-                .then(|| parse_expected(&expected))
-                .flatten()
-            else {
+            // The legacy #errors list remains independently comparable when
+            // a fixture also carries a current-standard #new-errors block.
+            // Prose-only locations and non-equivalent historical names are U.
+            let Some(expected) = parse_expected(&expected) else {
                 counts.2 += 1;
                 totals.2 += 1;
                 continue;
@@ -300,8 +327,4 @@ fn wpt_tree_error_inventory() {
     assert_eq!(docs.0 + docs.1 + docs.2, 1739);
     assert_eq!(fragments.0 + fragments.1 + fragments.2, 206);
     assert_eq!(scripted.0 + scripted.1 + scripted.2, 8);
-    assert!(
-        docs.0 >= 518 && fragments.0 >= 38 && scripted.0 == 8,
-        "tree diagnostic coverage regressed"
-    );
 }

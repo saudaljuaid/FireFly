@@ -69,3 +69,64 @@ fn byte_diagnostics_use_decoded_stream_positions() {
         .unwrap();
     assert_eq!((duplicate.position.line, duplicate.position.column), (2, 7));
 }
+
+#[test]
+fn recovery_modes_report_once_at_the_original_token_position() {
+    for _ in 0..12 {
+        let report = html::parse_with_errors(
+            "<!doctype html><table>lost<tr><td>x</td></tr></table><svg><g></svg><template><div>",
+        )
+        .unwrap();
+        let tree: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|error| error.phase == ErrorPhase::TreeConstruction)
+            .collect();
+        assert!(
+            tree.iter().any(|error| {
+                error.code == "foster-parenting-character-in-table" && error.position.column == 26
+            }),
+            "{tree:?}"
+        );
+        assert!(
+            tree.iter()
+                .any(|error| error.code == "foreign-end-tag-mismatch")
+        );
+        assert!(tree.iter().any(|error| error.code == "eof-in-template"));
+        for (index, error) in tree.iter().enumerate() {
+            assert!(!tree[..index].iter().any(|previous| {
+                previous.code == error.code && previous.position.offset == error.position.offset
+            }));
+        }
+    }
+}
+
+#[test]
+fn fragments_and_malformed_eof_keep_tree_positions() {
+    let context = Element {
+        namespace: Namespace::Html,
+        tag: "table".into(),
+        attributes: Vec::new(),
+    };
+    for _ in 0..12 {
+        let report =
+            html::parse_fragment_with_errors("<tr><td>x</td></tr></oops>", &context).unwrap();
+        assert!(report.errors.iter().any(|error| {
+            error.code == "unmatched-end-tag"
+                && error.phase == ErrorPhase::TreeConstruction
+                && error.position.line == 1
+        }));
+    }
+}
+
+#[test]
+fn nested_templates_report_each_eof_recovery_step() {
+    let report = html::parse_with_errors("<!doctype html><template><template><b>x").unwrap();
+    let errors: Vec<_> = report
+        .errors
+        .iter()
+        .filter(|error| error.code == "eof-in-template")
+        .collect();
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0].position, errors[1].position);
+}

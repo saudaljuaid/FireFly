@@ -108,6 +108,27 @@ fn meta_content_encoding(value: &[u8]) -> Option<&'static Encoding> {
     None
 }
 
+pub(crate) fn in_tree_meta_encoding(
+    charset: Option<&str>,
+    http_equiv: Option<&str>,
+    content: Option<&str>,
+) -> Option<&'static Encoding> {
+    let encoding = if let Some(encoding) = charset.and_then(|charset| label(charset.as_bytes())) {
+        encoding
+    } else if http_equiv.is_some_and(|value| value.eq_ignore_ascii_case("content-type")) {
+        meta_content_encoding(content?.as_bytes())?
+    } else {
+        return None;
+    };
+    Some(if encoding == UTF_16LE || encoding == UTF_16BE {
+        UTF_8
+    } else if encoding == X_USER_DEFINED {
+        WINDOWS_1252
+    } else {
+        encoding
+    })
+}
+
 fn attribute(bytes: &[u8], pos: &mut usize) -> Option<(Vec<u8>, Vec<u8>)> {
     let start = loop {
         while bytes
@@ -318,6 +339,17 @@ pub fn decode_html_bytes(
     } else {
         (UTF_8, EncodingSource::Default)
     };
+    decode_with_encoding(bytes, encoding, source)
+}
+
+pub(crate) fn decode_with_encoding(
+    bytes: &[u8],
+    encoding: &'static Encoding,
+    source: EncodingSource,
+) -> Result<DecodedHtml, Error> {
+    if bytes.len() > MAX_HTML_BYTES {
+        return Err(Error::InvalidInput("HTML input exceeds 16 MiB".into()));
+    }
     let (decoded, had_decoding_errors) = encoding.decode_with_bom_removal(bytes);
     Ok(DecodedHtml {
         text: decoded.into_owned(),

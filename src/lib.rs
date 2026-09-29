@@ -277,4 +277,43 @@ mod tests {
         assert!(!page.svg.contains("#ff0000"));
         assert_eq!(page.stylesheets, 1);
     }
+
+    #[test]
+    fn redirect_to_late_meta_restarts_and_loads_live_styles() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let response = if request.starts_with(b"GET /start ") {
+                    b"HTTP/1.1 302 Found\r\nLocation: /page\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 0\r\n\r\n".to_vec()
+                } else if request.starts_with(b"GET /page ") {
+                    let mut response =
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
+                            .to_vec();
+                    response.extend(vec![b' '; 1030]);
+                    response.extend_from_slice(b"<meta charset=latin1><style>h1 {color:#123456}</style><template><style>h1 {color:#ff0000}</style><link rel=stylesheet href=/inert.css></template><link rel=stylesheet href=/site.css><h1>Price \x80</h1><p>Linked</p>");
+                    response
+                } else {
+                    assert!(request.starts_with(b"GET /site.css "));
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nConnection: close\r\n\r\np {color:#654321}".to_vec()
+                };
+                stream.write_all(&response).unwrap();
+            }
+        });
+        let page = render_url(&format!("http://127.0.0.1:{port}/start"), 500.0).unwrap();
+        server.join().unwrap();
+        assert!(page.svg.contains(">€</text>"));
+        assert!(page.svg.contains("#123456"));
+        assert!(page.svg.contains("#654321"));
+        assert!(!page.svg.contains("#ff0000"));
+        assert_eq!(page.stylesheets, 1);
+        assert_eq!(page.url.path_and_query, "/page");
+    }
 }

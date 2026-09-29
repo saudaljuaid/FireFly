@@ -6,6 +6,7 @@ pub use errors::{ErrorPhase, ParseError, SourcePosition};
 
 use crate::Error;
 use crate::dom::{Attribute, Doctype, Document, Element, Namespace, NodeId, NodeKind};
+use encoding_rs::{Encoding, UTF_16BE, UTF_16LE};
 use tokenizer::{Tag, Token, Tokenizer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -443,6 +444,8 @@ fn is_foreign_breakout(tag: &Tag) -> bool {
 struct TreeBuilder {
     document: Document,
     errors: Vec<ParseError>,
+    token_position: Option<SourcePosition>,
+    token_error_codes: Vec<&'static str>,
     open: Vec<NodeId>,
     active_formatting: Vec<Option<NodeId>>,
     mode: InsertionMode,
@@ -458,8 +461,12 @@ struct TreeBuilder {
     scripting: bool,
     foster_parenting: bool,
     pending_table_text: String,
+    table_text_position: Option<SourcePosition>,
     table_text_mode: InsertionMode,
     template_modes: Vec<InsertionMode>,
+    byte_encoding: Option<&'static Encoding>,
+    encoding_tentative: bool,
+    encoding_request: Option<&'static Encoding>,
 }
 
 impl TreeBuilder {
@@ -467,6 +474,8 @@ impl TreeBuilder {
         Self {
             document: Document::default(),
             errors: Vec::new(),
+            token_position: None,
+            token_error_codes: Vec::new(),
             open: Vec::new(),
             active_formatting: Vec::new(),
             mode: InsertionMode::Initial,
@@ -482,8 +491,12 @@ impl TreeBuilder {
             scripting: false,
             foster_parenting: false,
             pending_table_text: String::new(),
+            table_text_position: None,
             table_text_mode: InsertionMode::InTable,
             template_modes: Vec::new(),
+            byte_encoding: None,
+            encoding_tentative: false,
+            encoding_request: None,
         }
     }
 
@@ -491,12 +504,72 @@ impl TreeBuilder {
         self.open.last().copied().unwrap_or(0)
     }
 
-    fn error(&mut self, tokenizer: &Tokenizer, code: &'static str) {
+    fn error(&mut self, _tokenizer: &Tokenizer, code: &'static str) {
+        self.error_here(code);
+    }
+
+    fn error_here(&mut self, code: &'static str) {
+        if self.token_error_codes.contains(&code) {
+            return;
+        }
+        self.token_error_codes.push(code);
         self.errors.push(ParseError {
             code,
-            position: tokenizer.token_position(),
+            position: self
+                .token_position
+                .expect("token position set before dispatch"),
             phase: ErrorPhase::TreeConstruction,
         });
+    }
+
+    fn error_each_template_at_eof(&mut self) {
+        self.errors.push(ParseError {
+            code: "eof-in-template",
+            position: self
+                .token_position
+                .expect("token position set before dispatch"),
+            phase: ErrorPhase::TreeConstruction,
+        });
+    }
+
+    fn error_at(&mut self, code: &'static str, position: SourcePosition) {
+        if self.token_error_codes.contains(&code) {
+            return;
+        }
+        self.token_error_codes.push(code);
+        self.errors.push(ParseError {
+            code,
+            position,
+            phase: ErrorPhase::TreeConstruction,
+        });
+    }
+
+    fn inspect_meta_encoding(&mut self, tag: &Tag) {
+        if !self.encoding_tentative || tag.name != "meta" {
+            return;
+        }
+        let attribute = |name| {
+            tag.attributes
+                .iter()
+                .find(|attribute| attribute.name == name)
+                .map(|attribute| attribute.value.as_str())
+        };
+        if let Some(declared) = encoding::in_tree_meta_encoding(
+            attribute("charset"),
+            attribute("http-equiv"),
+            attribute("content"),
+        ) {
+            self.encoding_tentative = false;
+            if self
+                .byte_encoding
+                .is_some_and(|encoding| encoding == UTF_16LE || encoding == UTF_16BE)
+            {
+                return;
+            }
+            if Some(declared) != self.byte_encoding {
+                self.encoding_request = Some(declared);
+            }
+        }
     }
 
     fn adjusted_current(&self) -> NodeId {
@@ -631,8 +704,12 @@ impl TreeBuilder {
                 self.insert_comment(data);
                 Ok(Some(false))
             }
-            Token::Doctype(_) => Ok(Some(false)),
+            Token::Doctype(_) => {
+                self.error_here("unexpected-doctype");
+                Ok(Some(false))
+            }
             Token::StartTag(tag) if is_foreign_breakout(tag) => {
+                self.error_here("html-start-tag-in-foreign-content");
                 while self.namespace(self.current()) != Namespace::Html
                     && !self.is_math_text_integration(self.current())
                     && !self.is_html_integration(self.current())
@@ -642,6 +719,7 @@ impl TreeBuilder {
                 Ok(None)
             }
             Token::EndTag(tag) if matches!(tag.name.as_str(), "p" | "br") => {
+                self.error_here("html-end-tag-in-foreign-content");
                 while self.open.len() > 1
                     && self.namespace(self.current()) != Namespace::Html
                     && !self.is_math_text_integration(self.current())
@@ -656,6 +734,9 @@ impl TreeBuilder {
                 Ok(Some(false))
             }
             Token::EndTag(tag) => {
+                if !self.name(self.current()).eq_ignore_ascii_case(&tag.name) {
+                    self.error_here("foreign-end-tag-mismatch");
+                }
                 for index in (0..self.open.len()).rev() {
                     let id = self.open[index];
                     if self.namespace(id) == Namespace::Html {
@@ -932,11 +1013,16 @@ impl TreeBuilder {
                 return;
             };
             let Some(open_index) = self.open.iter().position(|&id| id == formatting) else {
+                self.error_here("formatting-element-not-open");
                 self.active_formatting.remove(formatting_index);
                 return;
             };
             if !self.in_scope(formatting) {
+                self.error_here("formatting-element-not-in-scope");
                 return;
+            }
+            if formatting != self.current() {
+                self.error_here("misnested-formatting-end-tag");
             }
             let Some(furthest) = self.open[open_index + 1..]
                 .iter()
@@ -1052,6 +1138,7 @@ impl TreeBuilder {
         match tag.name.as_str() {
             "base" | "basefont" | "bgsound" | "link" | "meta" => {
                 self.insert_at(parent, tag)?;
+                self.inspect_meta_encoding(tag);
             }
             "title" | "style" | "script" | "noframes" => {
                 self.text_element(tag, parent, tokenizer)?;
@@ -1128,7 +1215,11 @@ impl TreeBuilder {
                 self.switch_template_mode(mode);
                 Ok(true)
             }
-            Token::EndTag(_) | Token::Eof => Ok(false),
+            Token::EndTag(_) => {
+                self.error_here("unexpected-end-tag-in-template");
+                Ok(false)
+            }
+            Token::Eof => Ok(false),
             Token::ProcessingInstruction { .. } => {
                 unreachable!("PI tokens are inserted before dispatch")
             }
@@ -1319,6 +1410,9 @@ impl TreeBuilder {
         for index in (0..self.open.len()).rev() {
             let name = self.name(self.open[index]);
             if name == "li" {
+                if index + 1 != self.open.len() {
+                    self.error_here("start-tag-implies-end-tag");
+                }
                 self.open.truncate(index);
                 return;
             }
@@ -1366,7 +1460,11 @@ impl TreeBuilder {
         for index in (0..self.open.len()).rev() {
             let name = self.name(self.open[index]);
             if matches!(name, "dd" | "dt") {
-                self.generate_implied_end_tags_except(if name == "dd" { "dd" } else { "dt" });
+                let is_dd = name == "dd";
+                if index + 1 != self.open.len() {
+                    self.error_here("start-tag-implies-end-tag");
+                }
+                self.generate_implied_end_tags_except(if is_dd { "dd" } else { "dt" });
                 self.open.truncate(index);
                 return;
             }
@@ -1393,10 +1491,14 @@ impl TreeBuilder {
         for index in (0..self.open.len()).rev() {
             let current = self.name(self.open[index]);
             if current == name {
+                if index + 1 != self.open.len() {
+                    self.error_here("end-tag-too-early");
+                }
                 self.open.truncate(index);
                 return;
             }
             if self.is_special_node(self.open[index]) {
+                self.error_here("unmatched-end-tag");
                 return;
             }
         }
@@ -1405,6 +1507,7 @@ impl TreeBuilder {
     fn body_start(&mut self, tag: &Tag, tokenizer: &mut Tokenizer) -> Result<(), Error> {
         match tag.name.as_str() {
             "html" => {
+                self.error_here("unexpected-html-start-tag");
                 if self.position("template").is_none()
                     && let Some(id) = self.html
                 {
@@ -1412,6 +1515,7 @@ impl TreeBuilder {
                 }
             }
             "body" => {
+                self.error_here("unexpected-body-start-tag");
                 if self.position("template").is_none()
                     && let Some(id) = self.body
                 {
@@ -1420,6 +1524,7 @@ impl TreeBuilder {
                 }
             }
             "frameset" => {
+                self.error_here("unexpected-frameset-start-tag");
                 if self.frameset_ok
                     && self.position("template").is_none()
                     && self.open.get(1) == self.body.as_ref()
@@ -1440,10 +1545,12 @@ impl TreeBuilder {
                     if self.template_modes.is_empty() {
                         self.form = Some(id);
                     }
+                } else {
+                    self.error_here("nested-form-start-tag");
                 }
             }
             "head" | "caption" | "col" | "colgroup" | "frame" | "tbody" | "td" | "tfoot" | "th"
-            | "thead" | "tr" => {}
+            | "thead" | "tr" => self.error_here("unexpected-start-tag-in-body"),
             "template" => {
                 self.frameset_ok = false;
                 self.start_template(tag, self.current())?;
@@ -1453,6 +1560,7 @@ impl TreeBuilder {
             }
             "base" | "basefont" | "bgsound" | "link" | "meta" => {
                 self.insert(tag)?;
+                self.inspect_meta_encoding(tag);
             }
             "title" | "style" | "script" | "noframes" => {
                 self.head_start(tag, self.current(), tokenizer)?;
@@ -1491,12 +1599,14 @@ impl TreeBuilder {
                     self.name(self.current()),
                     "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
                 ) {
+                    self.error_here("nested-heading-start-tag");
                     self.open.pop();
                 }
                 self.insert(tag)?;
             }
             "button" => {
                 if self.in_scope_named("button") {
+                    self.error_here("nested-button-start-tag");
                     self.close_in_scope("button");
                 }
                 self.reconstruct_active()?;
@@ -1515,12 +1625,14 @@ impl TreeBuilder {
                 self.insert(tag)?;
             }
             "image" => {
+                self.error_here("image-start-tag");
                 let mut image = tag.clone();
                 image.name = "img".into();
                 self.body_start(&image, tokenizer)?;
             }
             "a" => {
                 if let Some((_, previous)) = self.last_active("a") {
+                    self.error_here("nested-anchor-start-tag");
                     self.adoption_agency("a");
                     self.active_formatting
                         .retain(|entry| *entry != Some(previous));
@@ -1535,6 +1647,7 @@ impl TreeBuilder {
                 if let Some(index) = self.position("nobr")
                     && self.in_scope(self.open[index])
                 {
+                    self.error_here("nested-nobr-start-tag");
                     self.adoption_agency("nobr");
                     self.reconstruct_active()?;
                 }
@@ -1567,9 +1680,11 @@ impl TreeBuilder {
             }
             "select" => {
                 if self.fragment_is("select") {
+                    self.error_here("unexpected-select-start-tag");
                     return Ok(());
                 }
                 if self.in_scope_named("select") {
+                    self.error_here("nested-select-start-tag");
                     self.close_in_scope("select");
                 } else {
                     self.reconstruct_active()?;
@@ -1596,6 +1711,7 @@ impl TreeBuilder {
             }
             "input" => {
                 if self.fragment_is("select") {
+                    self.error_here("unexpected-input-in-select");
                     return Ok(());
                 }
                 if self.in_scope_named("select") {
@@ -1678,17 +1794,24 @@ impl TreeBuilder {
             "body" => {
                 if self.in_scope_named("body") {
                     self.mode = InsertionMode::AfterBody;
+                } else {
+                    self.error_here("body-end-tag-not-in-scope");
                 }
             }
             "html" => {
                 if self.in_scope_named("body") {
                     self.mode = InsertionMode::AfterBody;
                     return Ok(true);
+                } else {
+                    self.error_here("body-end-tag-not-in-scope");
                 }
             }
             "p" => {
                 if !self.p_in_button_scope() {
+                    self.error_here("p-end-tag-not-in-scope");
                     self.insert(&implied_tag("p"))?;
+                } else if self.name(self.current()) != "p" {
+                    self.error_here("end-tag-too-early");
                 }
                 self.close_p();
             }
@@ -1700,14 +1823,30 @@ impl TreeBuilder {
                 {
                     self.generate_implied_end_tags();
                     self.open.retain(|&id| id != form);
+                } else {
+                    self.error_here("form-end-tag-not-in-scope");
                 }
             }
             "li" => {
                 if self.li_in_list_item_scope() {
+                    if self.name(self.current()) != "li" {
+                        self.error_here("end-tag-too-early");
+                    }
                     self.close_in_scope("li");
+                } else {
+                    self.error_here("li-end-tag-not-in-scope");
                 }
             }
-            "dd" | "dt" => self.close_in_scope(name),
+            "dd" | "dt" => {
+                if !self.in_scope_named(name) {
+                    self.error_here("definition-item-end-tag-not-in-scope");
+                } else {
+                    if self.name(self.current()) != name {
+                        self.error_here("end-tag-too-early");
+                    }
+                    self.close_in_scope(name);
+                }
+            }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 if self
                     .open
@@ -1716,6 +1855,12 @@ impl TreeBuilder {
                     .any(|&id| matches!(self.name(id), "h1" | "h2" | "h3" | "h4" | "h5" | "h6"))
                 {
                     self.generate_implied_end_tags();
+                    if !matches!(
+                        self.name(self.current()),
+                        "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+                    ) {
+                        self.error_here("end-tag-too-early");
+                    }
                     while !matches!(
                         self.name(self.current()),
                         "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
@@ -1723,6 +1868,8 @@ impl TreeBuilder {
                         self.open.pop();
                     }
                     self.open.pop();
+                } else {
+                    self.error_here("heading-end-tag-not-in-scope");
                 }
             }
             "select" | "option" | "optgroup" => self.close_in_scope(name),
@@ -1737,6 +1884,7 @@ impl TreeBuilder {
                 }
             }
             "br" => {
+                self.error_here("br-end-tag");
                 self.reconstruct_active()?;
                 self.insert(&implied_tag("br"))?;
             }
@@ -1777,11 +1925,10 @@ impl TreeBuilder {
                 Ok(false)
             }
             Token::Eof => {
-                if self.fragment_context.is_none()
-                    && self
-                        .open
-                        .iter()
-                        .any(|&id| !matches!(self.name(id), "html" | "head" | "body"))
+                if self
+                    .open
+                    .iter()
+                    .any(|&id| !matches!(self.name(id), "html" | "head" | "body"))
                 {
                     self.error(tokenizer, "unclosed-elements-at-eof");
                 }
@@ -1797,7 +1944,7 @@ impl TreeBuilder {
                         .active_formatting
                         .iter()
                         .any(|entry| entry.is_some_and(|id| self.name(id) == tag.name));
-                if !known || tag.name == "p" && !self.p_in_button_scope() {
+                if !known && !matches!(tag.name.as_str(), "p" | "br") {
                     self.error(tokenizer, "unmatched-end-tag");
                 }
                 self.body_end(&tag.name)
@@ -1867,6 +2014,7 @@ impl TreeBuilder {
                 Ok(true)
             }
             Token::StartTag(tag) if tag.name == "table" => {
+                self.error_here("nested-table-start-tag");
                 if self.in_table_scope("table") {
                     let index = self.position("table").unwrap();
                     self.open.truncate(index);
@@ -1881,6 +2029,8 @@ impl TreeBuilder {
                     let index = self.position("table").unwrap();
                     self.open.truncate(index);
                     self.reset_mode();
+                } else {
+                    self.error_here("table-end-tag-not-in-scope");
                 }
                 Ok(false)
             }
@@ -1900,6 +2050,7 @@ impl TreeBuilder {
                         | "tr"
                 ) =>
             {
+                self.error_here("unexpected-end-tag-in-table");
                 Ok(false)
             }
             Token::StartTag(tag) if matches!(tag.name.as_str(), "style" | "script") => {
@@ -1911,6 +2062,7 @@ impl TreeBuilder {
                 Ok(false)
             }
             Token::StartTag(tag) if tag.name == "form" => {
+                self.error_here("form-start-tag-in-table");
                 if self.form.is_none() || !self.template_modes.is_empty() {
                     let id = self.insert(tag)?;
                     if self.template_modes.is_empty() {
@@ -1926,11 +2078,29 @@ impl TreeBuilder {
                         attr.name == "type" && attr.value.eq_ignore_ascii_case("hidden")
                     }) =>
             {
+                self.error_here("hidden-input-in-table");
                 self.insert(tag)?;
                 Ok(false)
             }
-            Token::Eof => Ok(false),
-            _ => self.process_in_body(token, tokenizer, true),
+            Token::Eof => {
+                if self.fragment_context.is_none()
+                    && self.open.iter().any(|&id| {
+                        matches!(self.name(id), "table" | "tbody" | "tfoot" | "thead" | "tr")
+                    })
+                {
+                    self.error_here("eof-in-table");
+                }
+                Ok(false)
+            }
+            _ => {
+                self.error_here(match token {
+                    Token::Character(_) => "foster-parenting-character-in-table",
+                    Token::StartTag(_) => "foster-parenting-start-tag",
+                    Token::EndTag(_) => "foster-parenting-end-tag",
+                    _ => "unexpected-token-in-table",
+                });
+                self.process_in_body(token, tokenizer, true)
+            }
         }
     }
 
@@ -1943,6 +2113,8 @@ impl TreeBuilder {
             Token::EndTag(tag) if tag.name == "caption" => {
                 if self.in_table_scope("caption") {
                     self.close_caption();
+                } else {
+                    self.error_here("caption-end-tag-not-in-scope");
                 }
                 Ok(false)
             }
@@ -1964,14 +2136,17 @@ impl TreeBuilder {
                     self.close_caption();
                     Ok(true)
                 } else {
+                    self.error_here("caption-not-in-scope");
                     Ok(false)
                 }
             }
             Token::EndTag(tag) if tag.name == "table" => {
                 if self.in_table_scope("caption") {
+                    self.error_here("table-end-tag-in-caption");
                     self.close_caption();
                     Ok(true)
                 } else {
+                    self.error_here("caption-not-in-scope");
                     Ok(false)
                 }
             }
@@ -1990,6 +2165,7 @@ impl TreeBuilder {
                         | "tr"
                 ) =>
             {
+                self.error_here("unexpected-end-tag-in-caption");
                 Ok(false)
             }
             _ => self.process_in_body(token, tokenizer, false),
@@ -2010,7 +2186,10 @@ impl TreeBuilder {
                 self.insert_comment(data);
                 Ok(false)
             }
-            Token::Doctype(_) => Ok(false),
+            Token::Doctype(_) => {
+                self.error_here("unexpected-doctype");
+                Ok(false)
+            }
             Token::StartTag(tag) if tag.name == "html" => {
                 self.process_in_body(token, tokenizer, false)
             }
@@ -2022,21 +2201,30 @@ impl TreeBuilder {
                 if self.name(self.current()) == "colgroup" {
                     self.open.pop();
                     self.mode = InsertionMode::InTable;
+                } else {
+                    self.error_here("colgroup-end-tag-without-colgroup");
                 }
                 Ok(false)
             }
-            Token::EndTag(tag) if tag.name == "col" => Ok(false),
+            Token::EndTag(tag) if tag.name == "col" => {
+                self.error_here("col-end-tag");
+                Ok(false)
+            }
             Token::StartTag(tag) if tag.name == "template" => {
                 self.start_template(tag, self.current())?;
                 Ok(false)
             }
             Token::Eof => self.process_in_body(token, tokenizer, false),
             _ if self.name(self.current()) == "colgroup" => {
+                self.error_here("unexpected-token-in-colgroup");
                 self.open.pop();
                 self.mode = InsertionMode::InTable;
                 Ok(true)
             }
-            _ => Ok(false),
+            _ => {
+                self.error_here("unexpected-token-in-colgroup");
+                Ok(false)
+            }
         }
     }
 
@@ -2053,6 +2241,7 @@ impl TreeBuilder {
                 Ok(false)
             }
             Token::StartTag(tag) if matches!(tag.name.as_str(), "td" | "th") => {
+                self.error_here("cell-start-tag-in-table-body");
                 self.clear_to(&["tbody", "thead", "tfoot", "template", "html"]);
                 self.insert(&implied_tag("tr"))?;
                 self.mode = InsertionMode::InRow;
@@ -2061,6 +2250,8 @@ impl TreeBuilder {
             Token::EndTag(tag) if matches!(tag.name.as_str(), "tbody" | "thead" | "tfoot") => {
                 if self.in_table_scope(&tag.name) {
                     self.close_section();
+                } else {
+                    self.error_here("table-section-end-tag-not-in-scope");
                 }
                 Ok(false)
             }
@@ -2074,6 +2265,7 @@ impl TreeBuilder {
                     self.close_section();
                     Ok(true)
                 } else {
+                    self.error_here("table-section-not-in-scope");
                     Ok(false)
                 }
             }
@@ -2082,6 +2274,7 @@ impl TreeBuilder {
                     self.close_section();
                     Ok(true)
                 } else {
+                    self.error_here("table-section-not-in-scope");
                     Ok(false)
                 }
             }
@@ -2091,6 +2284,7 @@ impl TreeBuilder {
                     "body" | "caption" | "col" | "colgroup" | "html" | "td" | "th" | "tr"
                 ) =>
             {
+                self.error_here("unexpected-end-tag-in-table-body");
                 Ok(false)
             }
             _ => self.process_in_table(token, tokenizer),
@@ -2109,6 +2303,8 @@ impl TreeBuilder {
             Token::EndTag(tag) if tag.name == "tr" => {
                 if self.in_table_scope("tr") {
                     self.close_row();
+                } else {
+                    self.error_here("row-end-tag-not-in-scope");
                 }
                 Ok(false)
             }
@@ -2122,6 +2318,7 @@ impl TreeBuilder {
                     self.close_row();
                     Ok(true)
                 } else {
+                    self.error_here("row-not-in-scope");
                     Ok(false)
                 }
             }
@@ -2130,6 +2327,7 @@ impl TreeBuilder {
                     self.close_row();
                     Ok(true)
                 } else {
+                    self.error_here("row-not-in-scope");
                     Ok(false)
                 }
             }
@@ -2138,6 +2336,7 @@ impl TreeBuilder {
                     self.close_row();
                     Ok(true)
                 } else {
+                    self.error_here("row-or-section-not-in-scope");
                     Ok(false)
                 }
             }
@@ -2147,6 +2346,7 @@ impl TreeBuilder {
                     "body" | "caption" | "col" | "colgroup" | "html" | "td" | "th"
                 ) =>
             {
+                self.error_here("unexpected-end-tag-in-row");
                 Ok(false)
             }
             _ => self.process_in_table(token, tokenizer),
@@ -2158,6 +2358,8 @@ impl TreeBuilder {
             Token::EndTag(tag) if matches!(tag.name.as_str(), "td" | "th") => {
                 if self.in_table_scope(&tag.name) {
                     self.close_cell();
+                } else {
+                    self.error_here("cell-end-tag-not-in-scope");
                 }
                 Ok(false)
             }
@@ -2179,6 +2381,7 @@ impl TreeBuilder {
                     self.close_cell();
                     Ok(true)
                 } else {
+                    self.error_here("cell-not-in-scope");
                     Ok(false)
                 }
             }
@@ -2192,6 +2395,7 @@ impl TreeBuilder {
                     self.close_cell();
                     Ok(true)
                 } else {
+                    self.error_here("table-end-tag-not-in-scope");
                     Ok(false)
                 }
             }
@@ -2201,6 +2405,7 @@ impl TreeBuilder {
                     "body" | "caption" | "col" | "colgroup" | "html"
                 ) =>
             {
+                self.error_here("unexpected-end-tag-in-cell");
                 Ok(false)
             }
             _ => self.process_in_body(token, tokenizer, false),
@@ -2215,6 +2420,9 @@ impl TreeBuilder {
         match token {
             Token::Character(text) => {
                 let spaces: String = text.chars().filter(|&c| html_space(c)).collect();
+                if spaces.len() != text.len() {
+                    self.error_here("unexpected-character-in-frameset");
+                }
                 self.insert_text(&spaces);
             }
             Token::Comment(data) => self.insert_comment(data),
@@ -2230,6 +2438,8 @@ impl TreeBuilder {
                     if self.name(self.current()) != "frameset" {
                         self.mode = InsertionMode::AfterFrameset;
                     }
+                } else {
+                    self.error_here("frameset-end-tag-at-root");
                 }
             }
             Token::StartTag(tag) if tag.name == "frame" => {
@@ -2238,7 +2448,12 @@ impl TreeBuilder {
             Token::StartTag(tag) if tag.name == "noframes" => {
                 self.head_start(tag, self.current(), tokenizer)?;
             }
-            _ => {}
+            Token::Eof => {
+                if self.name(self.current()) != "html" {
+                    self.error_here("eof-in-frameset");
+                }
+            }
+            _ => self.error_here("unexpected-token-in-frameset"),
         }
         Ok(false)
     }
@@ -2252,6 +2467,9 @@ impl TreeBuilder {
         match token {
             Token::Character(text) => {
                 let spaces: String = text.chars().filter(|&c| html_space(c)).collect();
+                if spaces.len() != text.len() {
+                    self.error_here("unexpected-character-after-frameset");
+                }
                 self.insert_text(&spaces);
             }
             Token::Comment(data) => {
@@ -2270,12 +2488,15 @@ impl TreeBuilder {
             Token::StartTag(tag) if tag.name == "noframes" => {
                 self.head_start(tag, self.current(), tokenizer)?;
             }
-            _ => {}
+            Token::Eof => {}
+            _ => self.error_here("unexpected-token-after-frameset"),
         }
         Ok(false)
     }
 
     fn consume(&mut self, mut token: Token, tokenizer: &mut Tokenizer) -> Result<(), Error> {
+        self.token_position = Some(tokenizer.token_position());
+        self.token_error_codes.clear();
         if self.ignore_next_lf {
             self.ignore_next_lf = false;
             if let Token::Character(text) = &token
@@ -2317,11 +2538,16 @@ impl TreeBuilder {
                         .find(|&&id| self.name(id).eq_ignore_ascii_case("template"))
                         .is_none_or(|&id| self.namespace(id) == Namespace::Html))
             {
+                if self.position("template").is_none() {
+                    self.error_here("template-end-tag-without-template");
+                }
                 self.close_template();
                 return Ok(());
             }
             if token == Token::Eof && self.mode != InsertionMode::InTableText {
                 while self.position("template").is_some() {
+                    // Each still-open template has its own EOF recovery step.
+                    self.error_each_template_at_eof();
                     self.close_template();
                 }
             }
@@ -2491,6 +2717,7 @@ impl TreeBuilder {
                         Token::EndTag(tag)
                             if !matches!(tag.name.as_str(), "body" | "html" | "br") =>
                         {
+                            self.error_here("unexpected-end-tag-in-head");
                             false
                         }
                         _ => {
@@ -2500,7 +2727,10 @@ impl TreeBuilder {
                         }
                     },
                     InsertionMode::InHeadNoscript => match &token {
-                        Token::Doctype(_) => false,
+                        Token::Doctype(_) => {
+                            self.error_here("unexpected-doctype");
+                            false
+                        }
                         Token::StartTag(tag) if tag.name == "html" => {
                             self.process_in_body(&token, tokenizer, false)?
                         }
@@ -2529,10 +2759,19 @@ impl TreeBuilder {
                         Token::StartTag(tag)
                             if matches!(tag.name.as_str(), "head" | "noscript") =>
                         {
+                            self.error_here("unexpected-start-tag-in-head-noscript");
                             false
                         }
-                        Token::EndTag(tag) if tag.name != "br" => false,
+                        Token::EndTag(tag) if tag.name != "br" => {
+                            self.error_here("unexpected-end-tag-in-head-noscript");
+                            false
+                        }
                         _ => {
+                            self.error_here(if token == Token::Eof {
+                                "eof-in-head-noscript"
+                            } else {
+                                "unexpected-token-in-head-noscript"
+                            });
                             self.open.pop();
                             self.mode = InsertionMode::InHead;
                             true
@@ -2543,7 +2782,10 @@ impl TreeBuilder {
                             self.insert_comment(data);
                             false
                         }
-                        Token::Doctype(_) => false,
+                        Token::Doctype(_) => {
+                            self.error_here("unexpected-doctype");
+                            false
+                        }
                         Token::StartTag(tag) if tag.name == "html" => {
                             self.merge_attributes(self.html.unwrap(), &tag.attributes);
                             false
@@ -2571,6 +2813,7 @@ impl TreeBuilder {
                         Token::EndTag(tag)
                             if !matches!(tag.name.as_str(), "body" | "html" | "br") =>
                         {
+                            self.error_here("unexpected-end-tag-after-head");
                             false
                         }
                         _ => {
@@ -2587,6 +2830,8 @@ impl TreeBuilder {
                     }
                     InsertionMode::InTableText => match &token {
                         Token::Character(text) => {
+                            self.table_text_position
+                                .get_or_insert(self.token_position.expect("token position"));
                             self.pending_table_text
                                 .extend(text.chars().filter(|&c| c != '\0'));
                             false
@@ -2596,8 +2841,13 @@ impl TreeBuilder {
                             if pending.chars().all(html_space) {
                                 self.append_text(self.current(), &pending);
                             } else {
+                                let position = self.table_text_position.unwrap_or_else(|| {
+                                    self.token_position.expect("token position")
+                                });
+                                self.error_at("foster-parenting-character-in-table", position);
                                 self.process_in_body(&Token::Character(pending), tokenizer, true)?;
                             }
+                            self.table_text_position = None;
                             self.mode = self.table_text_mode;
                             true
                         }
@@ -2634,7 +2884,10 @@ impl TreeBuilder {
                                 .append(self.html.unwrap(), NodeKind::Comment(data.clone()));
                             false
                         }
-                        Token::Doctype(_) => false,
+                        Token::Doctype(_) => {
+                            self.error_here("unexpected-doctype");
+                            false
+                        }
                         Token::StartTag(tag) if tag.name == "html" => {
                             self.merge_attributes(self.html.unwrap(), &tag.attributes);
                             false
@@ -2645,6 +2898,7 @@ impl TreeBuilder {
                         }
                         Token::Eof => false,
                         _ => {
+                            self.error_here("unexpected-token-after-body");
                             self.mode = InsertionMode::InBody;
                             true
                         }
@@ -2658,12 +2912,17 @@ impl TreeBuilder {
                             self.document.append(0, NodeKind::Comment(data.clone()));
                             false
                         }
-                        Token::Doctype(_) | Token::Eof => false,
+                        Token::Doctype(_) => {
+                            self.error_here("unexpected-doctype");
+                            false
+                        }
+                        Token::Eof => false,
                         Token::StartTag(tag) if tag.name == "html" => {
                             self.merge_attributes(self.html.unwrap(), &tag.attributes);
                             false
                         }
                         _ => {
+                            self.error_here("unexpected-token-after-body");
                             self.mode = InsertionMode::InBody;
                             true
                         }
@@ -2715,7 +2974,25 @@ pub fn parse_bytes_with_errors_and_scripting(
     scripting: bool,
 ) -> Result<ParseReport, Error> {
     let decoded = encoding::decode_html_bytes(input, transport_content_type)?;
-    parse_with_errors_and_scripting(&decoded.text, scripting)
+    let tentative = matches!(
+        decoded.source,
+        encoding::EncodingSource::Meta | encoding::EncodingSource::Default
+    );
+    let current = Encoding::for_label(decoded.encoding.as_bytes())
+        .expect("decoded HTML encoding has a canonical label");
+    match parse_document_internal(&decoded.text, scripting, tentative.then_some(current))? {
+        DocumentParse::Complete(report) => Ok(report),
+        DocumentParse::Restart(requested) => {
+            // The first tree and its diagnostics are discarded. The restarted
+            // parse has certain confidence, so another meta cannot loop.
+            let decoded =
+                encoding::decode_with_encoding(input, requested, encoding::EncodingSource::Meta)?;
+            match parse_document_internal(&decoded.text, scripting, None)? {
+                DocumentParse::Complete(report) => Ok(report),
+                DocumentParse::Restart(_) => unreachable!("restarted encoding is certain"),
+            }
+        }
+    }
 }
 
 /// Parse an HTML byte stream. Supply the final HTTP response's Content-Type
@@ -2782,12 +3059,30 @@ pub fn parse_with_scripting(input: &str, scripting: bool) -> Result<Document, Er
 }
 
 pub fn parse_with_errors_and_scripting(input: &str, scripting: bool) -> Result<ParseReport, Error> {
+    match parse_document_internal(input, scripting, None)? {
+        DocumentParse::Complete(report) => Ok(report),
+        DocumentParse::Restart(_) => unreachable!("decoded string has no restart path"),
+    }
+}
+
+enum DocumentParse {
+    Complete(ParseReport),
+    Restart(&'static Encoding),
+}
+
+fn parse_document_internal(
+    input: &str,
+    scripting: bool,
+    tentative_encoding: Option<&'static Encoding>,
+) -> Result<DocumentParse, Error> {
     if input.len() > 16 * 1024 * 1024 {
         return Err(Error::InvalidInput("HTML input exceeds 16 MiB".into()));
     }
     let mut tokenizer = Tokenizer::new(input);
     let mut builder = TreeBuilder::new();
     builder.scripting = scripting;
+    builder.byte_encoding = tentative_encoding;
+    builder.encoding_tentative = tentative_encoding.is_some();
     loop {
         tokenizer.set_cdata_allowed(
             !builder.open.is_empty()
@@ -2798,6 +3093,9 @@ pub fn parse_with_errors_and_scripting(input: &str, scripting: bool) -> Result<P
         };
         let eof = token == Token::Eof;
         builder.consume(token, &mut tokenizer)?;
+        if let Some(requested) = builder.encoding_request {
+            return Ok(DocumentParse::Restart(requested));
+        }
         if eof {
             break;
         }
@@ -2815,10 +3113,10 @@ pub fn parse_with_errors_and_scripting(input: &str, scripting: bool) -> Result<P
             },
         )
     });
-    Ok(ParseReport {
+    Ok(DocumentParse::Complete(ParseReport {
         document: builder.document.reachable_clone(),
         errors,
-    })
+    }))
 }
 
 /// Parse HTML in the context of an existing element. The returned document's root

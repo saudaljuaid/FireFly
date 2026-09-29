@@ -22,6 +22,7 @@ are counted as unrepresentable, not passing. The tree tests compare complete
 serialized trees exactly, and also check arena ownership and parent/child
 integrity for every case. `tests/upstream_errors.rs` inventories tokenizer
 errors exactly and compares the representable WPT error lists. WPT cases with
-prose-only positions, unmapped historical names, or a separate `#new-errors`
-block are reported as unrepresentable rather than silently treated as passing.
+prose-only positions or historical names without an equivalent Phos code are
+reported as unrepresentable rather than silently treated as passing. A
+`#new-errors` block does not exclude a comparable legacy `#errors` list.
 The original fixture files remain untouched.
