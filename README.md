@@ -1,8 +1,8 @@
-# LibreFly
+# Scarlite
 
-<img src="assets/logo-readme.jpeg" alt="LibreFly logo: an orange winged insect on a blue globe" width="320">
+<img src="assets/logo.webp" alt="Scarlite red emblem" width="320">
 
-**LibreFly** is a browser project. **Phos** is its browser engine, written in Rust from the ground up. The project does not embed Chromium, WebKit, or another browser engine.
+**Scarlite** is a browser project. **Phos** is its browser engine, written in Rust from the ground up. The project does not embed Chromium, WebKit, or another browser engine.
 
 Phos can load local HTML or fetch a web page over HTTP or HTTPS, follow redirects, load linked stylesheets, and render the result as SVG. It is still an early engine, not an everyday browser. There is no browser window, JavaScript runtime, image rendering, or full web standards support yet.
 
@@ -93,6 +93,6 @@ The goal is an independent, maintainable browser engine. Each milestone should b
 | `src/layout.rs`, `src/paint.rs` | Layout scene and SVG output |
 | `src/main.rs` | File and URL rendering command |
 | `examples/welcome.html` | Small sample document |
-| `assets/logo.jpeg`, `assets/logo-readme.jpeg` | Original logo and cropped README image |
+| `assets/logo.webp` | Scarlite logo |
 
 Licensed under Apache 2.0. See [LICENSE](LICENSE).

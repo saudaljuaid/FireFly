@@ -127,7 +127,7 @@ impl Client {
         let mut connection = self.connect(url)?;
         write!(
             connection,
-            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: LibreFly/0.1 Phos/0.1\r\nAccept: text/html, text/css;q=0.9, */*;q=0.1\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Scarlite/0.1 Phos/0.1\r\nAccept: text/html, text/css;q=0.9, */*;q=0.1\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n",
             url.path_and_query,
             url.authority()
         )?;

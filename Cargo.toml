@@ -1,10 +1,10 @@
 [package]
-name = "librefly"
+name = "scarlite"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "LibreFly browser project and Phos rendering engine"
-repository = "https://github.com/saudaljuaid/LibreFly"
+description = "Scarlite browser project and Phos rendering engine"
+repository = "https://github.com/saudaljuaid/Scarlite"
 readme = "README.md"
 
 [dependencies]
@@ -16,5 +16,5 @@ name = "phos"
 path = "src/lib.rs"
 
 [[bin]]
-name = "librefly"
+name = "scarlite"
 path = "src/main.rs"

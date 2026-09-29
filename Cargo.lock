@@ -42,14 +42,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
-name = "librefly"
-version = "0.1.0"
-dependencies = [
- "rustls",
- "webpki-roots",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -101,6 +93,14 @@ dependencies = [
  "ring",
  "rustls-pki-types",
  "untrusted",
+]
+
+[[package]]
+name = "scarlite"
+version = "0.1.0"
+dependencies = [
+ "rustls",
+ "webpki-roots",
 ]
 
 [[package]]

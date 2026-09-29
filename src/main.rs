@@ -12,7 +12,7 @@ struct Options {
 }
 
 fn usage() -> &'static str {
-    "Usage: librefly <input.html|http(s)://url> --output <output.svg> [--width <pixels>]\n\
+    "Usage: scarlite <input.html|http(s)://url> --output <output.svg> [--width <pixels>]\n\
      Render a local HTML file or web page with the Phos engine."
 }
 
@@ -72,7 +72,7 @@ fn run() -> Result<(), Error> {
             page.stylesheets
         );
         for warning in &page.warnings {
-            eprintln!("librefly: {warning}");
+            eprintln!("scarlite: {warning}");
         }
         page.svg
     } else {
@@ -92,7 +92,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("librefly: {error}");
+            eprintln!("scarlite: {error}");
             ExitCode::FAILURE
         }
     }
