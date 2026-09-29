@@ -1,6 +1,6 @@
 # LibreFly
 
-<img src="assets/logo.jpeg" alt="LibreFly logo: an orange winged insect on a blue globe" width="320">
+<img src="assets/logo-readme.jpeg" alt="LibreFly logo: an orange winged insect on a blue globe" width="320">
 
 **LibreFly** is a browser project. **Phos** is its browser engine, written in Rust from the ground up. The project does not embed Chromium, WebKit, or another browser engine.
 
@@ -69,6 +69,6 @@ The goal is an independent, maintainable browser engine. Each milestone should b
 | `src/layout.rs`, `src/paint.rs` | Layout scene and SVG output |
 | `src/main.rs` | File and URL rendering command |
 | `examples/welcome.html` | Small sample document |
-| `assets/logo.jpeg` | LibreFly logo |
+| `assets/logo.jpeg`, `assets/logo-readme.jpeg` | Original logo and cropped README image |
 
 Licensed under Apache 2.0. See [LICENSE](LICENSE).
