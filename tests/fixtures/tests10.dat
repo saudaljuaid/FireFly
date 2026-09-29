@@ -1,0 +1,373 @@
+#data
+<!DOCTYPE html><svg></svg>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+
+#data
+<!DOCTYPE html><body><svg></svg>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+
+#data
+<!DOCTYPE html><body><select><svg></svg></select>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <svg svg>
+
+#data
+<!DOCTYPE html><body><select><option><svg></svg></option></select>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <option>
+|         <svg svg>
+
+#data
+<!DOCTYPE html><body><table><svg></svg></table>
+#errors
+(1,33) foster-parenting-start-tag
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|     <table>
+
+#data
+<!DOCTYPE html><body><table><svg><g>foo</g></svg></table>
+#errors
+(1,33) foster-parenting-start-tag
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg g>
+|         "foo"
+|     <table>
+
+#data
+<!DOCTYPE html><body><table><svg><g>foo</g><g>bar</g></svg></table>
+#errors
+(1,33) foster-parenting-start-tag
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg g>
+|         "foo"
+|       <svg g>
+|         "bar"
+|     <table>
+
+#data
+<!DOCTYPE html><body><table><tbody><svg><g>foo</g><g>bar</g></svg></tbody></table>
+#errors
+(1,40) foster-parenting-start-tag
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg g>
+|         "foo"
+|       <svg g>
+|         "bar"
+|     <table>
+|       <tbody>
+
+#data
+<!DOCTYPE html><body><table><tbody><tr><svg><g>foo</g><g>bar</g></svg></tr></tbody></table>
+#errors
+(1,44) foster-parenting-start-tag
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg g>
+|         "foo"
+|       <svg g>
+|         "bar"
+|     <table>
+|       <tbody>
+|         <tr>
+
+#data
+<!DOCTYPE html><body><table><tbody><tr><td><svg><g>foo</g><g>bar</g></svg></td></tr></tbody></table>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             <svg svg>
+|               <svg g>
+|                 "foo"
+|               <svg g>
+|                 "bar"
+
+#data
+<!DOCTYPE html><body><table><tbody><tr><td><svg><g>foo</g><g>bar</g></svg><p>baz</td></tr></tbody></table>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             <svg svg>
+|               <svg g>
+|                 "foo"
+|               <svg g>
+|                 "bar"
+|             <p>
+|               "baz"
+
+#data
+<!DOCTYPE html><body><table><caption><svg><g>foo</g><g>bar</g></svg><p>baz</caption></table>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <caption>
+|         <svg svg>
+|           <svg g>
+|             "foo"
+|           <svg g>
+|             "bar"
+|         <p>
+|           "baz"
+
+#data
+<!DOCTYPE html><body><table><caption><svg><g>foo</g><g>bar</g><p>baz</table><p>quux
+#errors
+(1,65) unexpected-html-element-in-foreign-content
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <caption>
+|         <svg svg>
+|           <svg g>
+|             "foo"
+|           <svg g>
+|             "bar"
+|         <p>
+|           "baz"
+|     <p>
+|       "quux"
+
+#data
+<!DOCTYPE html><body><table><caption><svg><g>foo</g><g>bar</g>baz</table><p>quux
+#errors
+(1,73) unexpected-end-tag
+(1,73) expected-one-end-tag-but-got-another
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <caption>
+|         <svg svg>
+|           <svg g>
+|             "foo"
+|           <svg g>
+|             "bar"
+|           "baz"
+|     <p>
+|       "quux"
+
+#data
+<!DOCTYPE html><body><table><colgroup><svg><g>foo</g><g>bar</g><p>baz</table><p>quux
+#errors
+(1,43) foster-parenting-start-tag svg
+(1,66) unexpected HTML-like start tag token in foreign content
+(1,66) foster-parenting-start-tag
+(1,67) foster-parenting-character
+(1,68) foster-parenting-character
+(1,69) foster-parenting-character
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg g>
+|         "foo"
+|       <svg g>
+|         "bar"
+|     <p>
+|       "baz"
+|     <table>
+|       <colgroup>
+|     <p>
+|       "quux"
+
+#data
+<!DOCTYPE html><body><table><tr><td><select><svg><g>foo</g><g>bar</g><p>baz</table><p>quux
+#errors
+1:70: ERROR: Start tag 'p' isn't allowed here. Currently open tags: html, body, table, tbody, tr, td, select, svg.
+1:76: ERROR: End tag 'table' isn't allowed here. Currently open tags: html, body, table, tbody, tr, td, select.
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <table>
+|       <tbody>
+|         <tr>
+|           <td>
+|             <select>
+|               <svg svg>
+|                 <svg g>
+|                   "foo"
+|                 <svg g>
+|                   "bar"
+|               <p>
+|                 "baz"
+|     <p>
+|       "quux"
+
+#data
+<!DOCTYPE html><body><table><select><svg><g>foo</g><g>bar</g><p>baz</table><p>quux
+#errors
+1:29: ERROR: Start tag 'select' isn't allowed here. Currently open tags: html, body, table.
+1:37: ERROR: Start tag 'svg' isn't allowed here. Currently open tags: html, body, table, select.
+1:62: ERROR: Start tag 'p' isn't allowed here. Currently open tags: html, body, table, select, svg.
+1:62: ERROR: Start tag 'p' isn't allowed here. Currently open tags: html, body, table, select.
+1:65: ERROR: Character tokens aren't legal here
+1:66: ERROR: Character tokens aren't legal here
+1:67: ERROR: Character tokens aren't legal here
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <svg svg>
+|         <svg g>
+|           "foo"
+|         <svg g>
+|           "bar"
+|       <p>
+|         "baz"
+|     <table>
+|     <p>
+|       "quux"
+
+#data
+<!DOCTYPE html><body></body></html><svg><g>foo</g><g>bar</g><p>baz
+#errors
+(1,40) expected-eof-but-got-start-tag
+(1,63) unexpected-html-element-in-foreign-content
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg g>
+|         "foo"
+|       <svg g>
+|         "bar"
+|     <p>
+|       "baz"
+
+#data
+<!DOCTYPE html><body></body><svg><g>foo</g><g>bar</g><p>baz
+#errors
+(1,33) unexpected-start-tag-after-body
+(1,56) unexpected-html-element-in-foreign-content
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       <svg g>
+|         "foo"
+|       <svg g>
+|         "bar"
+|     <p>
+|       "baz"
+
+#data
+<!DOCTYPE html><body xlink:href=foo><svg xlink:href=foo></svg>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     xlink:href="foo"
+|     <svg svg>
+|       xlink href="foo"
+
+#data
+<!DOCTYPE html><body xlink:href=foo xml:lang=en><svg><g xml:lang=en xlink:href=foo></g></svg>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     xlink:href="foo"
+|     xml:lang="en"
+|     <svg svg>
+|       <svg g>
+|         xlink href="foo"
+|         xml lang="en"
+
+#data
+<!DOCTYPE html><body xlink:href=foo xml:lang=en><svg><g xml:lang=en xlink:href=foo /></svg>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     xlink:href="foo"
+|     xml:lang="en"
+|     <svg svg>
+|       <svg g>
+|         xlink href="foo"
+|         xml lang="en"

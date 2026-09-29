@@ -1,7 +1,7 @@
 pub mod tokenizer;
 
 use crate::Error;
-use crate::dom::{Attribute, Document, Element, NodeId, NodeKind};
+use crate::dom::{Attribute, Document, Element, Namespace, NodeId, NodeKind};
 use tokenizer::{Tag, Token, Tokenizer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +20,7 @@ enum InsertionMode {
     InTableBody,
     InRow,
     InCell,
+    InTemplate,
     AfterBody,
     AfterAfterBody,
 }
@@ -123,8 +124,6 @@ fn is_special(name: &str) -> bool {
                 | "li"
                 | "marquee"
                 | "object"
-                | "option"
-                | "optgroup"
                 | "select"
                 | "tbody"
                 | "td"
@@ -156,6 +155,187 @@ fn is_formatting(name: &str) -> bool {
     )
 }
 
+fn svg_name(name: &str) -> &str {
+    match name {
+        "altglyph" => "altGlyph",
+        "altglyphdef" => "altGlyphDef",
+        "altglyphitem" => "altGlyphItem",
+        "animatecolor" => "animateColor",
+        "animatemotion" => "animateMotion",
+        "animatetransform" => "animateTransform",
+        "clippath" => "clipPath",
+        "feblend" => "feBlend",
+        "fecolormatrix" => "feColorMatrix",
+        "fecomponenttransfer" => "feComponentTransfer",
+        "fecomposite" => "feComposite",
+        "feconvolvematrix" => "feConvolveMatrix",
+        "fediffuselighting" => "feDiffuseLighting",
+        "fedisplacementmap" => "feDisplacementMap",
+        "fedistantlight" => "feDistantLight",
+        "fedropshadow" => "feDropShadow",
+        "feflood" => "feFlood",
+        "fefunca" => "feFuncA",
+        "fefuncb" => "feFuncB",
+        "fefuncg" => "feFuncG",
+        "fefuncr" => "feFuncR",
+        "fegaussianblur" => "feGaussianBlur",
+        "feimage" => "feImage",
+        "femerge" => "feMerge",
+        "femergenode" => "feMergeNode",
+        "femorphology" => "feMorphology",
+        "feoffset" => "feOffset",
+        "fepointlight" => "fePointLight",
+        "fespecularlighting" => "feSpecularLighting",
+        "fespotlight" => "feSpotLight",
+        "fetile" => "feTile",
+        "feturbulence" => "feTurbulence",
+        "foreignobject" => "foreignObject",
+        "glyphref" => "glyphRef",
+        "lineargradient" => "linearGradient",
+        "radialgradient" => "radialGradient",
+        "textpath" => "textPath",
+        _ => name,
+    }
+}
+
+fn foreign_attributes(attributes: &[Attribute], namespace: Namespace) -> Vec<Attribute> {
+    attributes
+        .iter()
+        .map(|attribute| {
+            let name = match (namespace, attribute.name.as_str()) {
+                (Namespace::MathMl, "definitionurl") => "definitionURL",
+                (Namespace::Svg, "attributename") => "attributeName",
+                (Namespace::Svg, "attributetype") => "attributeType",
+                (Namespace::Svg, "basefrequency") => "baseFrequency",
+                (Namespace::Svg, "baseprofile") => "baseProfile",
+                (Namespace::Svg, "calcmode") => "calcMode",
+                (Namespace::Svg, "clippathunits") => "clipPathUnits",
+                (Namespace::Svg, "diffuseconstant") => "diffuseConstant",
+                (Namespace::Svg, "edgemode") => "edgeMode",
+                (Namespace::Svg, "filterunits") => "filterUnits",
+                (Namespace::Svg, "glyphref") => "glyphRef",
+                (Namespace::Svg, "gradienttransform") => "gradientTransform",
+                (Namespace::Svg, "gradientunits") => "gradientUnits",
+                (Namespace::Svg, "kernelmatrix") => "kernelMatrix",
+                (Namespace::Svg, "kernelunitlength") => "kernelUnitLength",
+                (Namespace::Svg, "keypoints") => "keyPoints",
+                (Namespace::Svg, "keysplines") => "keySplines",
+                (Namespace::Svg, "keytimes") => "keyTimes",
+                (Namespace::Svg, "lengthadjust") => "lengthAdjust",
+                (Namespace::Svg, "limitingconeangle") => "limitingConeAngle",
+                (Namespace::Svg, "markerheight") => "markerHeight",
+                (Namespace::Svg, "markerunits") => "markerUnits",
+                (Namespace::Svg, "markerwidth") => "markerWidth",
+                (Namespace::Svg, "maskcontentunits") => "maskContentUnits",
+                (Namespace::Svg, "maskunits") => "maskUnits",
+                (Namespace::Svg, "numoctaves") => "numOctaves",
+                (Namespace::Svg, "pathlength") => "pathLength",
+                (Namespace::Svg, "patterncontentunits") => "patternContentUnits",
+                (Namespace::Svg, "patterntransform") => "patternTransform",
+                (Namespace::Svg, "patternunits") => "patternUnits",
+                (Namespace::Svg, "pointsatx") => "pointsAtX",
+                (Namespace::Svg, "pointsaty") => "pointsAtY",
+                (Namespace::Svg, "pointsatz") => "pointsAtZ",
+                (Namespace::Svg, "preservealpha") => "preserveAlpha",
+                (Namespace::Svg, "preserveaspectratio") => "preserveAspectRatio",
+                (Namespace::Svg, "primitiveunits") => "primitiveUnits",
+                (Namespace::Svg, "refx") => "refX",
+                (Namespace::Svg, "refy") => "refY",
+                (Namespace::Svg, "repeatcount") => "repeatCount",
+                (Namespace::Svg, "repeatdur") => "repeatDur",
+                (Namespace::Svg, "requiredextensions") => "requiredExtensions",
+                (Namespace::Svg, "requiredfeatures") => "requiredFeatures",
+                (Namespace::Svg, "specularconstant") => "specularConstant",
+                (Namespace::Svg, "specularexponent") => "specularExponent",
+                (Namespace::Svg, "spreadmethod") => "spreadMethod",
+                (Namespace::Svg, "startoffset") => "startOffset",
+                (Namespace::Svg, "stddeviation") => "stdDeviation",
+                (Namespace::Svg, "stitchtiles") => "stitchTiles",
+                (Namespace::Svg, "surfacescale") => "surfaceScale",
+                (Namespace::Svg, "systemlanguage") => "systemLanguage",
+                (Namespace::Svg, "tablevalues") => "tableValues",
+                (Namespace::Svg, "targetx") => "targetX",
+                (Namespace::Svg, "targety") => "targetY",
+                (Namespace::Svg, "textlength") => "textLength",
+                (Namespace::Svg, "viewbox") => "viewBox",
+                (Namespace::Svg, "viewtarget") => "viewTarget",
+                (Namespace::Svg, "xchannelselector") => "xChannelSelector",
+                (Namespace::Svg, "ychannelselector") => "yChannelSelector",
+                (Namespace::Svg, "zoomandpan") => "zoomAndPan",
+                (_, "xlink:actuate") => "xlink actuate",
+                (_, "xlink:arcrole") => "xlink arcrole",
+                (_, "xlink:href") => "xlink href",
+                (_, "xlink:role") => "xlink role",
+                (_, "xlink:show") => "xlink show",
+                (_, "xlink:title") => "xlink title",
+                (_, "xlink:type") => "xlink type",
+                (_, "xml:lang") => "xml lang",
+                (_, "xml:space") => "xml space",
+                (_, "xmlns") => "xmlns xmlns",
+                (_, "xmlns:xlink") => "xmlns xlink",
+                _ => &attribute.name,
+            };
+            Attribute {
+                name: name.into(),
+                value: attribute.value.clone(),
+            }
+        })
+        .collect()
+}
+
+fn is_foreign_breakout(tag: &Tag) -> bool {
+    matches!(
+        tag.name.as_str(),
+        "b" | "big"
+            | "blockquote"
+            | "body"
+            | "br"
+            | "center"
+            | "code"
+            | "dd"
+            | "div"
+            | "dl"
+            | "dt"
+            | "em"
+            | "embed"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "head"
+            | "hr"
+            | "i"
+            | "img"
+            | "li"
+            | "listing"
+            | "menu"
+            | "meta"
+            | "nobr"
+            | "ol"
+            | "p"
+            | "pre"
+            | "ruby"
+            | "s"
+            | "small"
+            | "span"
+            | "strong"
+            | "strike"
+            | "sub"
+            | "sup"
+            | "table"
+            | "tt"
+            | "u"
+            | "ul"
+            | "var"
+    ) || (tag.name == "font"
+        && tag
+            .attributes
+            .iter()
+            .any(|attribute| matches!(attribute.name.as_str(), "color" | "face" | "size")))
+}
+
 struct TreeBuilder {
     document: Document,
     open: Vec<NodeId>,
@@ -168,6 +348,7 @@ struct TreeBuilder {
     foster_parenting: bool,
     pending_table_text: String,
     table_text_mode: InsertionMode,
+    template_modes: Vec<InsertionMode>,
 }
 
 impl TreeBuilder {
@@ -184,6 +365,7 @@ impl TreeBuilder {
             foster_parenting: false,
             pending_table_text: String::new(),
             table_text_mode: InsertionMode::InTable,
+            template_modes: Vec::new(),
         }
     }
 
@@ -199,6 +381,143 @@ impl TreeBuilder {
             .tag
     }
 
+    fn namespace(&self, id: NodeId) -> Namespace {
+        self.document
+            .element(id)
+            .expect("open node is an element")
+            .namespace
+    }
+
+    fn is_special_node(&self, id: NodeId) -> bool {
+        match self.namespace(id) {
+            Namespace::Html => is_special(self.name(id)),
+            Namespace::MathMl => matches!(
+                self.name(id),
+                "mi" | "mo" | "mn" | "ms" | "mtext" | "annotation-xml"
+            ),
+            Namespace::Svg => matches!(self.name(id), "foreignObject" | "desc" | "title"),
+        }
+    }
+
+    fn is_math_text_integration(&self, id: NodeId) -> bool {
+        self.namespace(id) == Namespace::MathMl
+            && matches!(self.name(id), "mi" | "mo" | "mn" | "ms" | "mtext")
+    }
+
+    fn is_html_integration(&self, id: NodeId) -> bool {
+        let element = self.document.element(id).expect("open node is an element");
+        match element.namespace {
+            Namespace::Svg => matches!(element.tag.as_str(), "foreignObject" | "desc" | "title"),
+            Namespace::MathMl if element.tag == "annotation-xml" => {
+                element.attribute("encoding").is_some_and(|value| {
+                    value.eq_ignore_ascii_case("text/html")
+                        || value.eq_ignore_ascii_case("application/xhtml+xml")
+                })
+            }
+            _ => false,
+        }
+    }
+
+    fn use_foreign_rules(&self, token: &Token) -> bool {
+        if self.open.is_empty()
+            || self.namespace(self.current()) == Namespace::Html
+            || matches!(token, Token::Eof)
+        {
+            return false;
+        }
+        let current = self.current();
+        if self.is_math_text_integration(current) {
+            if matches!(token, Token::Character(_)) {
+                return false;
+            }
+            if let Token::StartTag(tag) = token
+                && !matches!(tag.name.as_str(), "mglyph" | "malignmark")
+            {
+                return false;
+            }
+        }
+        if self.namespace(current) == Namespace::MathMl
+            && self.name(current) == "annotation-xml"
+            && matches!(token, Token::StartTag(tag) if tag.name == "svg")
+        {
+            return false;
+        }
+        if self.is_html_integration(current)
+            && matches!(token, Token::StartTag(_) | Token::Character(_))
+        {
+            return false;
+        }
+        true
+    }
+
+    fn insert_foreign(&mut self, tag: &Tag, namespace: Namespace) -> Result<(), Error> {
+        if !tag.self_closing && self.open.len() >= 256 {
+            return Err(Error::InvalidInput(
+                "HTML nesting exceeds the 256 element limit".into(),
+            ));
+        }
+        let (parent, reference) = self.insertion_location();
+        let name = if namespace == Namespace::Svg {
+            svg_name(&tag.name)
+        } else {
+            &tag.name
+        };
+        let id = self.document.insert_before(
+            parent,
+            reference,
+            NodeKind::Element(Element {
+                namespace,
+                tag: name.into(),
+                attributes: foreign_attributes(&tag.attributes, namespace),
+            }),
+        );
+        if !tag.self_closing {
+            self.open.push(id);
+        }
+        Ok(())
+    }
+
+    fn process_foreign(&mut self, token: &Token) -> Result<Option<bool>, Error> {
+        match token {
+            Token::Character(text) => {
+                self.insert_text(&text.replace('\0', "\u{fffd}"));
+                Ok(Some(false))
+            }
+            Token::Comment(data) => {
+                self.insert_comment(data);
+                Ok(Some(false))
+            }
+            Token::Doctype(_) => Ok(Some(false)),
+            Token::StartTag(tag) if is_foreign_breakout(tag) => {
+                while self.namespace(self.current()) != Namespace::Html
+                    && !self.is_math_text_integration(self.current())
+                    && !self.is_html_integration(self.current())
+                {
+                    self.open.pop();
+                }
+                Ok(Some(true))
+            }
+            Token::StartTag(tag) => {
+                self.insert_foreign(tag, self.namespace(self.current()))?;
+                Ok(Some(false))
+            }
+            Token::EndTag(tag) => {
+                for index in (0..self.open.len()).rev() {
+                    let id = self.open[index];
+                    if self.name(id).eq_ignore_ascii_case(&tag.name) {
+                        self.open.truncate(index);
+                        return Ok(Some(false));
+                    }
+                    if self.namespace(id) == Namespace::Html {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(false))
+            }
+            Token::Eof => Ok(None),
+        }
+    }
+
     fn append_text(&mut self, parent: NodeId, text: &str) {
         if text.is_empty() {
             return;
@@ -212,18 +531,39 @@ impl TreeBuilder {
         }
     }
 
+    fn template_content(&self, id: NodeId) -> Option<NodeId> {
+        self.document
+            .element(id)
+            .filter(|element| element.namespace == Namespace::Html && element.tag == "template")
+            .and_then(|_| self.document.nodes[id].children.first().copied())
+    }
+
+    fn insert_comment(&mut self, data: &str) {
+        let (parent, reference) = self.insertion_location();
+        self.document
+            .insert_before(parent, reference, NodeKind::Comment(data.into()));
+    }
+
     fn insertion_location_for(&self, current: NodeId) -> (NodeId, Option<NodeId>) {
         if self.foster_parenting
+            && self.namespace(current) == Namespace::Html
             && matches!(
                 self.name(current),
                 "table" | "tbody" | "tfoot" | "thead" | "tr"
             )
-            && let Some(&table) = self.open.iter().rev().find(|&&id| self.name(id) == "table")
-            && let Some(parent) = self.document.nodes[table].parent
+            && let Some(&target) = self.open.iter().rev().find(|&&id| {
+                self.namespace(id) == Namespace::Html
+                    && matches!(self.name(id), "table" | "template")
+            })
         {
-            return (parent, Some(table));
+            if let Some(content) = self.template_content(target) {
+                return (content, None);
+            }
+            if let Some(parent) = self.document.nodes[target].parent {
+                return (parent, Some(target));
+            }
         }
-        (current, None)
+        (self.template_content(current).unwrap_or(current), None)
     }
 
     fn insertion_location(&self) -> (NodeId, Option<NodeId>) {
@@ -261,10 +601,12 @@ impl TreeBuilder {
                 "HTML nesting exceeds the 256 element limit".into(),
             ));
         }
+        let parent = self.template_content(parent).unwrap_or(parent);
         let id = self.document.insert_before(
             parent,
             None,
             NodeKind::Element(Element {
+                namespace: Namespace::Html,
                 tag: tag.name.clone(),
                 attributes: tag.attributes.clone(),
             }),
@@ -289,6 +631,7 @@ impl TreeBuilder {
             parent,
             reference,
             NodeKind::Element(Element {
+                namespace: Namespace::Html,
                 tag: tag.name.clone(),
                 attributes: tag.attributes.clone(),
             }),
@@ -383,6 +726,16 @@ impl TreeBuilder {
             if entry == id {
                 return true;
             }
+            if (self.namespace(entry) == Namespace::MathMl
+                && matches!(
+                    self.name(entry),
+                    "mi" | "mo" | "mn" | "ms" | "mtext" | "annotation-xml"
+                ))
+                || (self.namespace(entry) == Namespace::Svg
+                    && matches!(self.name(entry), "foreignObject" | "desc" | "title"))
+            {
+                return false;
+            }
             if matches!(
                 self.name(entry),
                 "applet"
@@ -423,7 +776,7 @@ impl TreeBuilder {
             let Some(furthest) = self.open[open_index + 1..]
                 .iter()
                 .copied()
-                .find(|&id| is_special(self.name(id)))
+                .find(|&id| self.is_special_node(id))
             else {
                 self.open.truncate(open_index);
                 self.active_formatting.remove(formatting_index);
@@ -539,12 +892,88 @@ impl TreeBuilder {
         Ok(true)
     }
 
+    fn start_template(&mut self, tag: &Tag, parent: NodeId) -> Result<(), Error> {
+        let id = self.insert_at(parent, tag)?;
+        self.document.append(id, NodeKind::TemplateContent);
+        self.active_formatting.push(None);
+        self.template_modes.push(InsertionMode::InTemplate);
+        self.mode = InsertionMode::InTemplate;
+        Ok(())
+    }
+
+    fn close_template(&mut self) {
+        if let Some(index) = self.position("template") {
+            self.open.truncate(index);
+            self.clear_active_to_marker();
+            self.template_modes.pop();
+            self.reset_mode();
+        }
+    }
+
+    fn switch_template_mode(&mut self, mode: InsertionMode) {
+        if let Some(current) = self.template_modes.last_mut() {
+            *current = mode;
+        }
+        self.mode = mode;
+    }
+
+    fn process_in_template(
+        &mut self,
+        token: &Token,
+        tokenizer: &mut Tokenizer,
+    ) -> Result<bool, Error> {
+        match token {
+            Token::Character(_) | Token::Comment(_) | Token::Doctype(_) => {
+                self.process_in_body(token, tokenizer, false)
+            }
+            Token::StartTag(tag)
+                if matches!(
+                    tag.name.as_str(),
+                    "base"
+                        | "basefont"
+                        | "bgsound"
+                        | "link"
+                        | "meta"
+                        | "noframes"
+                        | "script"
+                        | "style"
+                        | "template"
+                        | "title"
+                ) =>
+            {
+                if tag.name == "template" {
+                    self.start_template(tag, self.current())?;
+                } else {
+                    self.head_start(tag, self.current(), tokenizer)?;
+                }
+                Ok(false)
+            }
+            Token::StartTag(tag) => {
+                let mode = match tag.name.as_str() {
+                    "caption" | "colgroup" | "tbody" | "tfoot" | "thead" => InsertionMode::InTable,
+                    "col" => InsertionMode::InColumnGroup,
+                    "tr" => InsertionMode::InTableBody,
+                    "td" | "th" => InsertionMode::InRow,
+                    _ => InsertionMode::InBody,
+                };
+                self.switch_template_mode(mode);
+                Ok(true)
+            }
+            Token::EndTag(_) | Token::Eof => Ok(false),
+        }
+    }
+
     fn position(&self, name: &str) -> Option<usize> {
-        self.open.iter().rposition(|&id| self.name(id) == name)
+        self.open
+            .iter()
+            .rposition(|&id| self.namespace(id) == Namespace::Html && self.name(id) == name)
     }
 
     fn in_table_scope(&self, name: &str) -> bool {
         for &id in self.open.iter().rev() {
+            if self.namespace(id) != Namespace::Html {
+                continue;
+            }
             let current = self.name(id);
             if current == name {
                 return true;
@@ -573,17 +1002,23 @@ impl TreeBuilder {
             .open
             .iter()
             .rev()
-            .find_map(|&id| match self.name(id) {
-                "td" | "th" => Some(InsertionMode::InCell),
-                "tr" => Some(InsertionMode::InRow),
-                "tbody" | "thead" | "tfoot" => Some(InsertionMode::InTableBody),
-                "caption" => Some(InsertionMode::InCaption),
-                "colgroup" => Some(InsertionMode::InColumnGroup),
-                "table" => Some(InsertionMode::InTable),
-                "body" => Some(InsertionMode::InBody),
+            .find_map(|&id| match (self.namespace(id), self.name(id)) {
+                (Namespace::Html, "td" | "th") => Some(InsertionMode::InCell),
+                (Namespace::Html, "tr") => Some(InsertionMode::InRow),
+                (Namespace::Html, "tbody" | "thead" | "tfoot") => Some(InsertionMode::InTableBody),
+                (Namespace::Html, "caption") => Some(InsertionMode::InCaption),
+                (Namespace::Html, "colgroup") => Some(InsertionMode::InColumnGroup),
+                (Namespace::Html, "table") => Some(InsertionMode::InTable),
+                (Namespace::Html, "template") => self.template_modes.last().copied(),
+                (Namespace::Html, "body") => Some(InsertionMode::InBody),
+                (Namespace::Html, "head") => Some(InsertionMode::InHead),
                 _ => None,
             })
-            .unwrap_or(InsertionMode::InBody);
+            .unwrap_or(if self.body.is_some() {
+                InsertionMode::InBody
+            } else {
+                InsertionMode::AfterHead
+            });
     }
 
     fn close_cell(&mut self) {
@@ -623,6 +1058,31 @@ impl TreeBuilder {
         }
     }
 
+    fn generate_implied_end_tags_except(&mut self, except: &str) {
+        while self.name(self.current()) != except
+            && matches!(
+                self.name(self.current()),
+                "dd" | "dt" | "li" | "optgroup" | "option" | "p" | "rb" | "rp" | "rt" | "rtc"
+            )
+        {
+            self.open.pop();
+        }
+    }
+
+    fn in_scope_named(&self, name: &str) -> bool {
+        self.position(name)
+            .is_some_and(|index| self.in_scope(self.open[index]))
+    }
+
+    fn close_in_scope(&mut self, name: &str) {
+        if self.in_scope_named(name) {
+            self.generate_implied_end_tags_except(name);
+            if let Some(index) = self.position(name) {
+                self.open.truncate(index);
+            }
+        }
+    }
+
     fn close_caption(&mut self) {
         self.generate_implied_end_tags();
         if let Some(index) = self.position("caption") {
@@ -656,7 +1116,7 @@ impl TreeBuilder {
                 self.open.truncate(index);
                 return;
             }
-            if is_special(name) && !matches!(name, "address" | "div" | "p") {
+            if self.is_special_node(self.open[index]) && !matches!(name, "address" | "div" | "p") {
                 return;
             }
         }
@@ -682,7 +1142,7 @@ impl TreeBuilder {
                 self.open.truncate(index);
                 return;
             }
-            if is_special(current) {
+            if self.is_special_node(self.open[index]) {
                 return;
             }
         }
@@ -691,16 +1151,22 @@ impl TreeBuilder {
     fn body_start(&mut self, tag: &Tag, tokenizer: &mut Tokenizer) -> Result<(), Error> {
         match tag.name.as_str() {
             "html" => {
-                if let Some(id) = self.html {
+                if self.position("template").is_none()
+                    && let Some(id) = self.html
+                {
                     self.merge_attributes(id, &tag.attributes);
                 }
             }
             "body" => {
-                if let Some(id) = self.body {
+                if self.position("template").is_none()
+                    && let Some(id) = self.body
+                {
                     self.merge_attributes(id, &tag.attributes);
                 }
             }
-            "head" => {}
+            "head" | "caption" | "col" | "colgroup" | "frame" | "tbody" | "td" | "tfoot" | "th"
+            | "thead" | "tr" => {}
+            "template" => self.start_template(tag, self.current())?,
             "base" | "basefont" | "bgsound" | "link" | "meta" | "title" | "style" | "script"
             | "noframes" => {
                 self.head_start(tag, self.current(), tokenizer)?;
@@ -753,6 +1219,57 @@ impl TreeBuilder {
                 }
                 self.insert(tag)?;
             }
+            "select" => {
+                if self.in_scope_named("select") {
+                    self.close_in_scope("select");
+                } else {
+                    self.reconstruct_active()?;
+                    self.insert(tag)?;
+                }
+            }
+            "option" => {
+                if self.in_scope_named("select") {
+                    self.generate_implied_end_tags_except("optgroup");
+                } else if self.name(self.current()) == "option" {
+                    self.open.pop();
+                }
+                self.reconstruct_active()?;
+                self.insert(tag)?;
+            }
+            "optgroup" => {
+                if self.in_scope_named("select") {
+                    self.generate_implied_end_tags();
+                } else if self.name(self.current()) == "option" {
+                    self.open.pop();
+                }
+                self.reconstruct_active()?;
+                self.insert(tag)?;
+            }
+            "input" => {
+                if self.in_scope_named("select") {
+                    self.close_in_scope("select");
+                }
+                self.reconstruct_active()?;
+                self.insert(tag)?;
+            }
+            "hr" => {
+                if self.p_in_button_scope() {
+                    self.close_p();
+                }
+                if self.in_scope_named("select") {
+                    self.generate_implied_end_tags();
+                }
+                self.insert(tag)?;
+            }
+            "math" | "svg" => {
+                self.reconstruct_active()?;
+                let namespace = if tag.name == "math" {
+                    Namespace::MathMl
+                } else {
+                    Namespace::Svg
+                };
+                self.insert_foreign(tag, namespace)?;
+            }
             "table" => {
                 if self.p_in_button_scope() {
                     self.close_p();
@@ -776,12 +1293,12 @@ impl TreeBuilder {
     fn body_end(&mut self, name: &str) -> Result<bool, Error> {
         match name {
             "body" => {
-                if self.body.is_some() {
+                if self.in_scope_named("body") {
                     self.mode = InsertionMode::AfterBody;
                 }
             }
             "html" => {
-                if self.body.is_some() {
+                if self.in_scope_named("body") {
                     self.mode = InsertionMode::AfterBody;
                     return Ok(true);
                 }
@@ -793,6 +1310,7 @@ impl TreeBuilder {
                 self.close_p();
             }
             "li" => self.close_block("li"),
+            "select" | "option" | "optgroup" => self.close_in_scope(name),
             name if is_formatting(name) => self.adoption_agency(name),
             "applet" | "marquee" | "object" => {
                 if let Some(index) = self.position(name)
@@ -829,8 +1347,7 @@ impl TreeBuilder {
                 Ok(false)
             }
             Token::Comment(data) => {
-                self.document
-                    .append(self.current(), NodeKind::Comment(data.clone()));
+                self.insert_comment(data);
                 Ok(false)
             }
             Token::Doctype(_) | Token::Eof => Ok(false),
@@ -862,8 +1379,7 @@ impl TreeBuilder {
                 Ok(true)
             }
             Token::Comment(data) => {
-                self.document
-                    .append(self.current(), NodeKind::Comment(data.clone()));
+                self.insert_comment(data);
                 Ok(false)
             }
             Token::Doctype(_) => Ok(false),
@@ -936,6 +1452,10 @@ impl TreeBuilder {
             }
             Token::StartTag(tag) if matches!(tag.name.as_str(), "style" | "script") => {
                 self.head_start(tag, self.current(), tokenizer)?;
+                Ok(false)
+            }
+            Token::StartTag(tag) if tag.name == "template" => {
+                self.start_template(tag, self.current())?;
                 Ok(false)
             }
             Token::StartTag(tag)
@@ -1025,8 +1545,7 @@ impl TreeBuilder {
                 Ok(false)
             }
             Token::Comment(data) => {
-                self.document
-                    .append(self.current(), NodeKind::Comment(data.clone()));
+                self.insert_comment(data);
                 Ok(false)
             }
             Token::Doctype(_) => Ok(false),
@@ -1045,6 +1564,10 @@ impl TreeBuilder {
                 Ok(false)
             }
             Token::EndTag(tag) if tag.name == "col" => Ok(false),
+            Token::StartTag(tag) if tag.name == "template" => {
+                self.start_template(tag, self.current())?;
+                Ok(false)
+            }
             Token::Eof => self.process_in_body(token, tokenizer, false),
             _ if self.name(self.current()) == "colgroup" => {
                 self.open.pop();
@@ -1224,6 +1747,24 @@ impl TreeBuilder {
 
     fn consume(&mut self, mut token: Token, tokenizer: &mut Tokenizer) -> Result<(), Error> {
         for _ in 0..32 {
+            if let Token::EndTag(tag) = &token
+                && tag.name == "template"
+                && (!self.use_foreign_rules(&token)
+                    || self
+                        .open
+                        .iter()
+                        .rev()
+                        .find(|&&id| self.name(id).eq_ignore_ascii_case("template"))
+                        .is_none_or(|&id| self.namespace(id) == Namespace::Html))
+            {
+                self.close_template();
+                return Ok(());
+            }
+            if token == Token::Eof && self.mode != InsertionMode::InTableText {
+                while self.position("template").is_some() {
+                    self.close_template();
+                }
+            }
             if let Token::Character(text) = &token {
                 let (spaces, rest) = split_initial_space(text);
                 match self.mode {
@@ -1258,214 +1799,237 @@ impl TreeBuilder {
                 }
             }
 
-            let reprocess = match self.mode {
-                InsertionMode::Initial => match &token {
-                    Token::Comment(data) => {
-                        self.document.append(0, NodeKind::Comment(data.clone()));
-                        false
-                    }
-                    Token::Doctype(doctype) => {
-                        self.document.append(0, NodeKind::Doctype(doctype.clone()));
-                        self.mode = InsertionMode::BeforeHtml;
-                        false
-                    }
-                    _ => {
-                        self.mode = InsertionMode::BeforeHtml;
-                        true
-                    }
-                },
-                InsertionMode::BeforeHtml => match &token {
-                    Token::Comment(data) => {
-                        self.document.append(0, NodeKind::Comment(data.clone()));
-                        false
-                    }
-                    Token::Doctype(_) => false,
-                    Token::StartTag(tag) if tag.name == "html" => {
-                        self.html = Some(self.insert(tag)?);
-                        self.mode = InsertionMode::BeforeHead;
-                        false
-                    }
-                    Token::EndTag(tag)
-                        if !matches!(tag.name.as_str(), "head" | "body" | "html" | "br") =>
-                    {
-                        false
-                    }
-                    _ => {
-                        self.html = Some(self.insert(&implied_tag("html"))?);
-                        self.mode = InsertionMode::BeforeHead;
-                        true
-                    }
-                },
-                InsertionMode::BeforeHead => match &token {
-                    Token::Comment(data) => {
-                        self.document
-                            .append(self.current(), NodeKind::Comment(data.clone()));
-                        false
-                    }
-                    Token::Doctype(_) => false,
-                    Token::StartTag(tag) if tag.name == "html" => {
-                        self.merge_attributes(self.html.unwrap(), &tag.attributes);
-                        false
-                    }
-                    Token::StartTag(tag) if tag.name == "head" => {
-                        self.head = Some(self.insert(tag)?);
-                        self.mode = InsertionMode::InHead;
-                        false
-                    }
-                    Token::EndTag(tag)
-                        if !matches!(tag.name.as_str(), "head" | "body" | "html" | "br") =>
-                    {
-                        false
-                    }
-                    _ => {
-                        self.head = Some(self.insert(&implied_tag("head"))?);
-                        self.mode = InsertionMode::InHead;
-                        true
-                    }
-                },
-                InsertionMode::InHead => match &token {
-                    Token::Comment(data) => {
-                        self.document
-                            .append(self.current(), NodeKind::Comment(data.clone()));
-                        false
-                    }
-                    Token::Doctype(_) => false,
-                    Token::StartTag(tag) if tag.name == "html" => {
-                        self.merge_attributes(self.html.unwrap(), &tag.attributes);
-                        false
-                    }
-                    Token::StartTag(tag) if self.head_start(tag, self.current(), tokenizer)? => {
-                        false
-                    }
-                    Token::EndTag(tag) if tag.name == "head" => {
-                        self.open.pop();
-                        self.mode = InsertionMode::AfterHead;
-                        false
-                    }
-                    Token::EndTag(tag) if !matches!(tag.name.as_str(), "body" | "html" | "br") => {
-                        false
-                    }
-                    _ => {
-                        self.open.pop();
-                        self.mode = InsertionMode::AfterHead;
-                        true
-                    }
-                },
-                InsertionMode::AfterHead => match &token {
-                    Token::Comment(data) => {
-                        self.document
-                            .append(self.current(), NodeKind::Comment(data.clone()));
-                        false
-                    }
-                    Token::Doctype(_) => false,
-                    Token::StartTag(tag) if tag.name == "html" => {
-                        self.merge_attributes(self.html.unwrap(), &tag.attributes);
-                        false
-                    }
-                    Token::StartTag(tag) if tag.name == "body" => {
-                        self.body = Some(self.insert(tag)?);
-                        self.mode = InsertionMode::InBody;
-                        false
-                    }
-                    Token::StartTag(tag)
-                        if self.head_start(tag, self.head.unwrap(), tokenizer)? =>
-                    {
-                        false
-                    }
-                    Token::EndTag(tag) if !matches!(tag.name.as_str(), "body" | "html" | "br") => {
-                        false
-                    }
-                    _ => {
-                        self.body = Some(self.insert(&implied_tag("body"))?);
-                        self.mode = InsertionMode::InBody;
-                        true
-                    }
-                },
-                InsertionMode::InBody => self.process_in_body(&token, tokenizer, false)?,
-                InsertionMode::InTable => self.process_in_table(&token, tokenizer)?,
-                InsertionMode::InCaption => self.process_in_caption(&token, tokenizer)?,
-                InsertionMode::InColumnGroup => self.process_in_column_group(&token, tokenizer)?,
-                InsertionMode::InTableText => match &token {
-                    Token::Character(text) => {
-                        self.pending_table_text
-                            .extend(text.chars().filter(|&c| c != '\0'));
-                        false
-                    }
-                    _ => {
-                        let pending = std::mem::take(&mut self.pending_table_text);
-                        if pending.chars().all(html_space) {
-                            self.append_text(self.current(), &pending);
-                        } else {
-                            self.process_in_body(&Token::Character(pending), tokenizer, true)?;
+            let foreign_result = if self.use_foreign_rules(&token) {
+                self.process_foreign(&token)?
+            } else {
+                None
+            };
+            let reprocess = if let Some(reprocess) = foreign_result {
+                reprocess
+            } else {
+                match self.mode {
+                    InsertionMode::Initial => match &token {
+                        Token::Comment(data) => {
+                            self.document.append(0, NodeKind::Comment(data.clone()));
+                            false
                         }
-                        self.mode = self.table_text_mode;
-                        true
+                        Token::Doctype(doctype) => {
+                            self.document.append(0, NodeKind::Doctype(doctype.clone()));
+                            self.mode = InsertionMode::BeforeHtml;
+                            false
+                        }
+                        _ => {
+                            self.mode = InsertionMode::BeforeHtml;
+                            true
+                        }
+                    },
+                    InsertionMode::BeforeHtml => match &token {
+                        Token::Comment(data) => {
+                            self.document.append(0, NodeKind::Comment(data.clone()));
+                            false
+                        }
+                        Token::Doctype(_) => false,
+                        Token::StartTag(tag) if tag.name == "html" => {
+                            self.html = Some(self.insert(tag)?);
+                            self.mode = InsertionMode::BeforeHead;
+                            false
+                        }
+                        Token::EndTag(tag)
+                            if !matches!(tag.name.as_str(), "head" | "body" | "html" | "br") =>
+                        {
+                            false
+                        }
+                        _ => {
+                            self.html = Some(self.insert(&implied_tag("html"))?);
+                            self.mode = InsertionMode::BeforeHead;
+                            true
+                        }
+                    },
+                    InsertionMode::BeforeHead => match &token {
+                        Token::Comment(data) => {
+                            self.insert_comment(data);
+                            false
+                        }
+                        Token::Doctype(_) => false,
+                        Token::StartTag(tag) if tag.name == "html" => {
+                            self.merge_attributes(self.html.unwrap(), &tag.attributes);
+                            false
+                        }
+                        Token::StartTag(tag) if tag.name == "head" => {
+                            self.head = Some(self.insert(tag)?);
+                            self.mode = InsertionMode::InHead;
+                            false
+                        }
+                        Token::EndTag(tag)
+                            if !matches!(tag.name.as_str(), "head" | "body" | "html" | "br") =>
+                        {
+                            false
+                        }
+                        _ => {
+                            self.head = Some(self.insert(&implied_tag("head"))?);
+                            self.mode = InsertionMode::InHead;
+                            true
+                        }
+                    },
+                    InsertionMode::InHead => match &token {
+                        Token::Comment(data) => {
+                            self.insert_comment(data);
+                            false
+                        }
+                        Token::Doctype(_) => false,
+                        Token::StartTag(tag) if tag.name == "html" => {
+                            self.merge_attributes(self.html.unwrap(), &tag.attributes);
+                            false
+                        }
+                        Token::StartTag(tag) if tag.name == "template" => {
+                            self.start_template(tag, self.current())?;
+                            false
+                        }
+                        Token::StartTag(tag)
+                            if self.head_start(tag, self.current(), tokenizer)? =>
+                        {
+                            false
+                        }
+                        Token::EndTag(tag) if tag.name == "head" => {
+                            self.open.pop();
+                            self.mode = InsertionMode::AfterHead;
+                            false
+                        }
+                        Token::EndTag(tag)
+                            if !matches!(tag.name.as_str(), "body" | "html" | "br") =>
+                        {
+                            false
+                        }
+                        _ => {
+                            self.open.pop();
+                            self.mode = InsertionMode::AfterHead;
+                            true
+                        }
+                    },
+                    InsertionMode::AfterHead => match &token {
+                        Token::Comment(data) => {
+                            self.insert_comment(data);
+                            false
+                        }
+                        Token::Doctype(_) => false,
+                        Token::StartTag(tag) if tag.name == "html" => {
+                            self.merge_attributes(self.html.unwrap(), &tag.attributes);
+                            false
+                        }
+                        Token::StartTag(tag) if tag.name == "body" => {
+                            self.body = Some(self.insert(tag)?);
+                            self.mode = InsertionMode::InBody;
+                            false
+                        }
+                        Token::StartTag(tag) if tag.name == "template" => {
+                            self.start_template(tag, self.head.unwrap())?;
+                            false
+                        }
+                        Token::StartTag(tag)
+                            if self.head_start(tag, self.head.unwrap(), tokenizer)? =>
+                        {
+                            false
+                        }
+                        Token::EndTag(tag)
+                            if !matches!(tag.name.as_str(), "body" | "html" | "br") =>
+                        {
+                            false
+                        }
+                        _ => {
+                            self.body = Some(self.insert(&implied_tag("body"))?);
+                            self.mode = InsertionMode::InBody;
+                            true
+                        }
+                    },
+                    InsertionMode::InBody => self.process_in_body(&token, tokenizer, false)?,
+                    InsertionMode::InTable => self.process_in_table(&token, tokenizer)?,
+                    InsertionMode::InCaption => self.process_in_caption(&token, tokenizer)?,
+                    InsertionMode::InColumnGroup => {
+                        self.process_in_column_group(&token, tokenizer)?
                     }
-                },
-                InsertionMode::InTableBody => self.process_in_table_body(&token, tokenizer)?,
-                InsertionMode::InRow => self.process_in_row(&token, tokenizer)?,
-                InsertionMode::InCell => self.process_in_cell(&token, tokenizer)?,
-                InsertionMode::Text => match &token {
-                    Token::Character(text) => {
-                        self.append_text(self.current(), text);
-                        false
-                    }
-                    Token::EndTag(_) => {
-                        self.open.pop();
-                        self.mode = self.original_mode;
-                        false
-                    }
-                    Token::Eof => {
-                        self.open.pop();
-                        self.mode = self.original_mode;
-                        true
-                    }
-                    _ => false,
-                },
-                InsertionMode::AfterBody => match &token {
-                    Token::Character(text) if text.chars().all(html_space) => {
-                        self.append_text(self.current(), text);
-                        false
-                    }
-                    Token::Comment(data) => {
-                        self.document
-                            .append(self.html.unwrap(), NodeKind::Comment(data.clone()));
-                        false
-                    }
-                    Token::Doctype(_) => false,
-                    Token::StartTag(tag) if tag.name == "html" => {
-                        self.merge_attributes(self.html.unwrap(), &tag.attributes);
-                        false
-                    }
-                    Token::EndTag(tag) if tag.name == "html" => {
-                        self.mode = InsertionMode::AfterAfterBody;
-                        false
-                    }
-                    Token::Eof => false,
-                    _ => {
-                        self.mode = InsertionMode::InBody;
-                        true
-                    }
-                },
-                InsertionMode::AfterAfterBody => match &token {
-                    Token::Character(text) if text.chars().all(html_space) => {
-                        self.append_text(self.current(), text);
-                        false
-                    }
-                    Token::Comment(data) => {
-                        self.document.append(0, NodeKind::Comment(data.clone()));
-                        false
-                    }
-                    Token::Doctype(_) | Token::Eof => false,
-                    Token::StartTag(tag) if tag.name == "html" => {
-                        self.merge_attributes(self.html.unwrap(), &tag.attributes);
-                        false
-                    }
-                    _ => {
-                        self.mode = InsertionMode::InBody;
-                        true
-                    }
-                },
+                    InsertionMode::InTableText => match &token {
+                        Token::Character(text) => {
+                            self.pending_table_text
+                                .extend(text.chars().filter(|&c| c != '\0'));
+                            false
+                        }
+                        _ => {
+                            let pending = std::mem::take(&mut self.pending_table_text);
+                            if pending.chars().all(html_space) {
+                                self.append_text(self.current(), &pending);
+                            } else {
+                                self.process_in_body(&Token::Character(pending), tokenizer, true)?;
+                            }
+                            self.mode = self.table_text_mode;
+                            true
+                        }
+                    },
+                    InsertionMode::InTableBody => self.process_in_table_body(&token, tokenizer)?,
+                    InsertionMode::InRow => self.process_in_row(&token, tokenizer)?,
+                    InsertionMode::InCell => self.process_in_cell(&token, tokenizer)?,
+                    InsertionMode::InTemplate => self.process_in_template(&token, tokenizer)?,
+                    InsertionMode::Text => match &token {
+                        Token::Character(text) => {
+                            self.append_text(self.current(), text);
+                            false
+                        }
+                        Token::EndTag(_) => {
+                            self.open.pop();
+                            self.mode = self.original_mode;
+                            false
+                        }
+                        Token::Eof => {
+                            self.open.pop();
+                            self.mode = self.original_mode;
+                            true
+                        }
+                        _ => false,
+                    },
+                    InsertionMode::AfterBody => match &token {
+                        Token::Character(text) if text.chars().all(html_space) => {
+                            self.append_text(self.current(), text);
+                            false
+                        }
+                        Token::Comment(data) => {
+                            self.document
+                                .append(self.html.unwrap(), NodeKind::Comment(data.clone()));
+                            false
+                        }
+                        Token::Doctype(_) => false,
+                        Token::StartTag(tag) if tag.name == "html" => {
+                            self.merge_attributes(self.html.unwrap(), &tag.attributes);
+                            false
+                        }
+                        Token::EndTag(tag) if tag.name == "html" => {
+                            self.mode = InsertionMode::AfterAfterBody;
+                            false
+                        }
+                        Token::Eof => false,
+                        _ => {
+                            self.mode = InsertionMode::InBody;
+                            true
+                        }
+                    },
+                    InsertionMode::AfterAfterBody => match &token {
+                        Token::Character(text) if text.chars().all(html_space) => {
+                            self.append_text(self.current(), text);
+                            false
+                        }
+                        Token::Comment(data) => {
+                            self.document.append(0, NodeKind::Comment(data.clone()));
+                            false
+                        }
+                        Token::Doctype(_) | Token::Eof => false,
+                        Token::StartTag(tag) if tag.name == "html" => {
+                            self.merge_attributes(self.html.unwrap(), &tag.attributes);
+                            false
+                        }
+                        _ => {
+                            self.mode = InsertionMode::InBody;
+                            true
+                        }
+                    },
+                }
             };
             if !reprocess {
                 return Ok(());

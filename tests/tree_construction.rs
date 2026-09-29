@@ -1,4 +1,4 @@
-use phos::dom::{Document, NodeId, NodeKind};
+use phos::dom::{Document, Namespace, NodeId, NodeKind};
 use phos::html;
 
 fn dump(document: &Document) -> String {
@@ -7,6 +7,10 @@ fn dump(document: &Document) -> String {
             let indent = "  ".repeat(depth);
             match &document.nodes[child].kind {
                 NodeKind::Document => unreachable!(),
+                NodeKind::TemplateContent => {
+                    lines.push(format!("| {indent}content"));
+                    walk(document, child, depth + 1, lines);
+                }
                 NodeKind::Doctype(doctype) => lines.push(format!(
                     "| {indent}<!DOCTYPE {}>",
                     doctype.name.as_deref().unwrap_or("")
@@ -14,7 +18,12 @@ fn dump(document: &Document) -> String {
                 NodeKind::Comment(text) => lines.push(format!("| {indent}<!-- {text} -->")),
                 NodeKind::Text(text) => lines.push(format!("| {indent}\"{text}\"")),
                 NodeKind::Element(element) => {
-                    lines.push(format!("| {indent}<{}>", element.tag));
+                    let prefix = match element.namespace {
+                        Namespace::Html => "",
+                        Namespace::MathMl => "math ",
+                        Namespace::Svg => "svg ",
+                    };
+                    lines.push(format!("| {indent}<{prefix}{}>", element.tag));
                     let mut attributes = element.attributes.clone();
                     attributes.sort_by(|left, right| left.name.cmp(&right.name));
                     for attribute in attributes {
@@ -33,6 +42,33 @@ fn dump(document: &Document) -> String {
     lines.join("\n")
 }
 
+fn assert_parent_links(document: &Document) {
+    assert!(document.nodes[0].parent.is_none());
+    let mut links = vec![0usize; document.nodes.len()];
+    for (parent, node) in document.nodes.iter().enumerate() {
+        for &child in &node.children {
+            assert!(child < document.nodes.len());
+            assert_eq!(document.nodes[child].parent, Some(parent));
+            links[child] += 1;
+        }
+    }
+    for (id, node) in document.nodes.iter().enumerate() {
+        assert_eq!(links[id], usize::from(node.parent.is_some()), "node {id}");
+    }
+    let mut visited = vec![false; document.nodes.len()];
+    for (id, node) in document.nodes.iter().enumerate() {
+        if node.parent.is_none() {
+            let mut stack = vec![id];
+            while let Some(current) = stack.pop() {
+                assert!(!visited[current], "cycle or duplicate node {current}");
+                visited[current] = true;
+                stack.extend(&document.nodes[current].children);
+            }
+        }
+    }
+    assert!(visited.into_iter().all(|node| node));
+}
+
 fn check_cases(group: &str, data: &str, numbers: &[usize]) {
     let normalized = data.replace("\r\n", "\n");
     let cases: Vec<_> = normalized.split("#data\n").skip(1).collect();
@@ -42,6 +78,7 @@ fn check_cases(group: &str, data: &str, numbers: &[usize]) {
         let (_, expected) = rest.split_once("#document\n").unwrap();
         let expected = expected.trim_end_matches('\n');
         let document = html::parse(input).unwrap();
+        assert_parent_links(&document);
         assert_eq!(
             dump(&document),
             expected,
@@ -85,12 +122,71 @@ fn selected_html5lib_tree_construction_cases() {
     check_cases(
         "tables01.dat",
         include_str!("fixtures/tables01.dat"),
-        &[1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15, 16, 19],
+        &[
+            1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15, 16, 19, 7, 8, 9, 10, 17, 18,
+        ],
+    );
+    check_cases(
+        "tests2.dat",
+        include_str!("fixtures/tests2.dat"),
+        &[37, 38, 39, 49],
+    );
+    check_cases(
+        "tests1-select.dat",
+        include_str!("fixtures/tests1-select.dat"),
+        &[30, 35, 100],
+    );
+    check_cases(
+        "template.dat",
+        include_str!("fixtures/template.dat"),
+        &[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 50, 51, 52, 53, 54, 55, 56,
+            57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 75, 76, 77, 78, 79,
+            80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 101,
+            102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 125, 126, 127,
+        ],
+    );
+    check_cases(
+        "tests17.dat",
+        include_str!("fixtures/tests17.dat"),
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    );
+    check_cases(
+        "tests10.dat",
+        include_str!("fixtures/tests10.dat"),
+        &[
+            1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25,
+        ],
+    );
+    check_cases(
+        "tests9.dat",
+        include_str!("fixtures/tests9.dat"),
+        &[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 24, 25, 26,
+        ],
+    );
+    check_cases(
+        "tests11.dat",
+        include_str!("fixtures/tests11.dat"),
+        &[1, 3, 5, 6, 7, 9, 10, 13],
+    );
+    check_cases(
+        "tests20.dat",
+        include_str!("fixtures/tests20.dat"),
+        &[53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64],
+    );
+    check_cases(
+        "webkit02.dat",
+        include_str!("fixtures/webkit02.dat"),
+        &[
+            26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 23, 24, 25,
+        ],
     );
     check_cases(
         "adoption01.dat",
         include_str!("fixtures/adoption01.dat"),
-        &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16],
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 13],
     );
     check_cases(
         "adoption02.dat",
@@ -152,6 +248,7 @@ fn repeated_identical_formatting_is_limited_and_resets_at_markers() {
 fn repeated_misnesting_keeps_the_arena_consistent() {
     let input = "<b><i><p>x</b>y</i></p>".repeat(500);
     let document = html::parse(&input).unwrap();
+    assert_parent_links(&document);
     let mut seen = vec![false; document.nodes.len()];
     fn walk(document: &Document, id: NodeId, seen: &mut [bool]) {
         assert!(!seen[id], "node visited twice: {id}");
@@ -339,4 +436,86 @@ fn malformed_caption_endings_and_eof_preserve_tree_shape() {
         dump(&html::parse("<table><caption>Open").unwrap()),
         "| <html>\n|   <head>\n|   <body>\n|     <table>\n|       <caption>\n|         \"Open\""
     );
+}
+
+#[test]
+fn select_recovery_handles_options_formatting_and_table_boundaries() {
+    let cases = [
+        (
+            "<select><optgroup label=a><option>one<option>two</optgroup><option>three",
+            "| <html>\n|   <head>\n|   <body>\n|     <select>\n|       <optgroup>\n|         label=\"a\"\n|         <option>\n|           \"one\"\n|         <option>\n|           \"two\"\n|       <option>\n|         \"three\"",
+        ),
+        (
+            "<select><option>one<select><option>two</select>tail",
+            "| <html>\n|   <head>\n|   <body>\n|     <select>\n|       <option>\n|         \"one\"\n|     <option>\n|       \"twotail\"",
+        ),
+        (
+            "<table><select><option>A<tr><td>B</table>tail",
+            "| <html>\n|   <head>\n|   <body>\n|     <select>\n|       <option>\n|         \"A\"\n|     <table>\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"B\"\n|     \"tail\"",
+        ),
+    ];
+    for (input, expected) in cases {
+        let document = html::parse(input).unwrap();
+        assert_parent_links(&document);
+        assert_eq!(dump(&document), expected, "{input}");
+    }
+}
+
+#[test]
+fn foreign_content_and_integration_points_keep_namespaces() {
+    let cases = [
+        (
+            "<svg viewbox='0 0 1 1'><lineargradient><stop offset='0'/></lineargradient><foreignObject><p>HTML</p></foreignObject></svg><p>Tail",
+            "| <html>\n|   <head>\n|   <body>\n|     <svg svg>\n|       viewBox=\"0 0 1 1\"\n|       <svg linearGradient>\n|         <svg stop>\n|           offset=\"0\"\n|       <svg foreignObject>\n|         <p>\n|           \"HTML\"\n|     <p>\n|       \"Tail\"",
+        ),
+        (
+            "<math definitionurl=x><mi><b>hi</b></mi><annotation-xml encoding='text/html'><span>ok</span></annotation-xml></math>",
+            "| <html>\n|   <head>\n|   <body>\n|     <math math>\n|       definitionURL=\"x\"\n|       <math mi>\n|         <b>\n|           \"hi\"\n|       <math annotation-xml>\n|         encoding=\"text/html\"\n|         <span>\n|           \"ok\"",
+        ),
+        (
+            "<svg><g><p>x</p></svg><div>y",
+            "| <html>\n|   <head>\n|   <body>\n|     <svg svg>\n|       <svg g>\n|     <p>\n|       \"x\"\n|     <div>\n|       \"y\"",
+        ),
+    ];
+    for (input, expected) in cases {
+        let document = html::parse(input).unwrap();
+        assert_parent_links(&document);
+        assert_eq!(dump(&document), expected, "{input}");
+    }
+}
+
+#[test]
+fn repeated_select_table_and_foreign_recovery_stays_consistent() {
+    let input = "<svg><g><p>x</p></svg><table><select><option>a<tr><td>b</table>".repeat(300);
+    let document = html::parse(&input).unwrap();
+    assert_parent_links(&document);
+    let tree = dump(&document);
+    assert_eq!(tree.matches("\"x\"").count(), 300);
+    assert_eq!(tree.matches("\"b\"").count(), 300);
+}
+
+#[test]
+fn templates_keep_content_and_styles_inert() {
+    let input = "<style>p{color:blue}</style><template><style>p{color:red}</style><p>hidden</p></template><p>visible</p>";
+    let document = html::parse(input).unwrap();
+    assert_parent_links(&document);
+    assert_eq!(document.stylesheets(), "p{color:blue}\n");
+    let svg = phos::render(input, 600.0).unwrap();
+    assert!(svg.contains("visible"));
+    assert!(!svg.contains("hidden"));
+}
+
+#[test]
+fn nested_template_eof_and_repeated_malformed_content_stay_bounded() {
+    let at_limit = format!("<body>{}", "<template>".repeat(254));
+    let document = html::parse(&at_limit).unwrap();
+    assert_parent_links(&document);
+    assert!(html::parse(&format!("<body>{}", "<template>".repeat(255))).is_err());
+
+    let repeated = "<template><table><tr><td>x</template><select><option>y</select>".repeat(200);
+    let document = html::parse(&repeated).unwrap();
+    assert_parent_links(&document);
+    let tree = dump(&document);
+    assert_eq!(tree.matches("\"x\"").count(), 200);
+    assert_eq!(tree.matches("\"y\"").count(), 200);
 }

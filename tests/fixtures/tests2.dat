@@ -1,0 +1,52 @@
+#data
+<!DOCTYPE html><select><option><optgroup>
+#errors
+(1,41): eof-in-select
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <option>
+|       <optgroup>
+
+#data
+<!DOCTYPE html><select><optgroup><option></optgroup><option><select><option>
+#errors
+1:61: ERROR: Start tag 'select' isn't allowed here. Currently open tags: html, body, select, option.
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <optgroup>
+|         <option>
+|       <option>
+|     <option>
+
+#data
+<!DOCTYPE html><select><optgroup><option><optgroup>
+#errors
+(1,51): eof-in-select
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <optgroup>
+|         <option>
+|       <optgroup>
+
+#data
+<!DOCTYPE html><select><optgroup></optgroup></select>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <optgroup>

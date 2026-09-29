@@ -315,6 +315,11 @@ pub fn compute(document: &Document, sheet: &Stylesheet) -> Vec<ComputedStyle> {
 }
 
 pub fn is_visible(document: &Document, styles: &[ComputedStyle], node: NodeId) -> bool {
+    if matches!(document.nodes[node].kind, NodeKind::TemplateContent)
+        || matches!(&document.nodes[node].kind, NodeKind::Element(element) if element.namespace == crate::dom::Namespace::Html && element.tag == "template")
+    {
+        return false;
+    }
     if styles[node].display == Display::None {
         return false;
     }

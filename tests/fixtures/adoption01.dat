@@ -299,3 +299,18 @@
 |           <b>
 |             "x"
 |     "y"
+
+#data
+<a><svg><tr><input></a>
+#errors
+(1,3): expected-doctype-but-got-start-tag
+(1,23): unexpected-end-tag
+(1,23): adoption-agency-1.3
+#document
+| <html>
+|   <head>
+|   <body>
+|     <a>
+|       <svg svg>
+|         <svg tr>
+|           <svg input>

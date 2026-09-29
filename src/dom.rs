@@ -14,8 +14,16 @@ pub struct Attribute {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Namespace {
+    Html,
+    MathMl,
+    Svg,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Element {
+    pub namespace: Namespace,
     pub tag: String,
     pub attributes: Vec<Attribute>,
 }
@@ -37,6 +45,7 @@ impl Element {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
     Document,
+    TemplateContent,
     Doctype(Doctype),
     Comment(String),
     Element(Element),
@@ -138,9 +147,21 @@ impl Document {
 
     pub fn stylesheets(&self) -> String {
         let mut css = String::new();
-        for node in &self.nodes {
+        for (id, node) in self.nodes.iter().enumerate() {
             if let NodeKind::Element(element) = &node.kind {
                 if element.tag != "style" {
+                    continue;
+                }
+                let mut ancestor = self.nodes[id].parent;
+                let mut in_template = false;
+                while let Some(parent) = ancestor {
+                    if matches!(self.nodes[parent].kind, NodeKind::TemplateContent) {
+                        in_template = true;
+                        break;
+                    }
+                    ancestor = self.nodes[parent].parent;
+                }
+                if in_template {
                     continue;
                 }
                 for &child in &node.children {

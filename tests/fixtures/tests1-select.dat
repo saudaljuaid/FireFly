@@ -1,0 +1,52 @@
+#data
+<select><b><option><select><option></b></select>X
+#errors
+1:1: ERROR: Expected a doctype token
+1:20: ERROR: Start tag 'select' isn't allowed here. Currently open tags: html, body, select, b, option.
+1:36: ERROR: End tag 'b' isn't allowed here. Currently open tags: html, body, b, select, option.
+1:50: ERROR: Premature end of file. Currently open tags: html, body, b.
+#document
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <b>
+|         <option>
+|     <b>
+|       <option>
+|     "X"
+
+#data
+<!DOCTYPE html>A<option>B<optgroup>C<select>D</option>E
+#errors
+(1,54): unexpected-end-tag-in-select
+(1,55): eof-in-select
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     "A"
+|     <option>
+|       "B"
+|     <optgroup>
+|       "C"
+|       <select>
+|         "DE"
+
+#data
+<select><b><option><select><option></b></select>
+#errors
+1:1: ERROR: Expected a doctype token
+1:20: ERROR: Start tag 'select' isn't allowed here. Currently open tags: html, body, select, b, option.
+1:36: ERROR: End tag 'b' isn't allowed here. Currently open tags: html, body, b, select, option.
+1:49: ERROR: Premature end of file. Currently open tags: html, body, b.
+#document
+| <html>
+|   <head>
+|   <body>
+|     <select>
+|       <b>
+|         <option>
+|     <b>
+|       <option>
