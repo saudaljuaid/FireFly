@@ -2,7 +2,7 @@
 
 <img src="assets/logo.webp" alt="Scarlite red emblem" width="320">
 
-**Scarlite** is the browser project formerly named LibreFly. **Phos** is its Rust engine. Phos loads a local HTML file or an HTTP(S) page, builds a document, applies inline and linked CSS, lays out text and boxes, and paints SVG. The library remains named `phos`; both `scarlite` and the existing `librefly` CLI are built. There is no browser window or JavaScript runtime.
+**Scarlite** is a browser project. **Phos** is its Rust engine. Phos loads a local HTML file or an HTTP(S) page, builds a document, applies inline and linked CSS, lays out text and boxes, and paints SVG. The library remains named `phos`; both `scarlite` and the existing `librefly` CLI are built. There is no browser window or JavaScript runtime.
 
 ## Try it
 
