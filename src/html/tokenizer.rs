@@ -3,6 +3,10 @@ use std::collections::{HashSet, VecDeque};
 use crate::dom::Attribute;
 pub use crate::dom::Doctype;
 
+#[path = "named_references.rs"]
+mod named_references;
+use named_references::{MAX_NAMED_REFERENCE_LENGTH, NAMED_REFERENCES};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {
     pub name: String,
@@ -16,6 +20,7 @@ pub enum Token {
     StartTag(Tag),
     EndTag(Tag),
     Comment(String),
+    ProcessingInstruction { target: String, data: String },
     Character(String),
     Eof,
 }
@@ -23,12 +28,30 @@ pub enum Token {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Data,
+    Plaintext,
     Rcdata,
     Rawtext,
     ScriptData,
+    ScriptEscapeStart,
+    ScriptEscapeStartDash,
+    ScriptEscaped,
+    ScriptEscapedDash,
+    ScriptEscapedDashDash,
+    ScriptEscapedLess,
+    ScriptDoubleEscapeStart,
+    ScriptDoubleEscaped,
+    ScriptDoubleEscapedDash,
+    ScriptDoubleEscapedDashDash,
+    ScriptDoubleEscapedLess,
+    ScriptDoubleEscapeEnd,
     TextLess,
     TextEndName,
     TagOpen,
+    ProcessingInstructionOpen,
+    ProcessingInstructionTarget,
+    AfterProcessingInstructionTarget,
+    ProcessingInstructionData,
+    ProcessingInstructionQuestionable,
     EndTagOpen,
     TagName,
     BeforeAttributeName,
@@ -41,10 +64,17 @@ enum State {
     AfterQuotedValue,
     SelfClosingStartTag,
     MarkupDeclarationOpen,
+    CdataSection,
+    CdataSectionBracket,
+    CdataSectionEnd,
     BogusComment,
     CommentStart,
     CommentStartDash,
     Comment,
+    CommentLess,
+    CommentLessBang,
+    CommentLessBangDash,
+    CommentLessBangDashDash,
     CommentEndDash,
     CommentEnd,
     CommentEndBang,
@@ -82,9 +112,14 @@ pub struct Tokenizer {
     attribute_value: String,
     attribute_names: HashSet<String>,
     comment: String,
+    pi_target: String,
+    pi_data: String,
+    processing_instructions: bool,
     doctype: Option<Doctype>,
     identifier_public: bool,
     text_end_name: String,
+    script_escape_name: String,
+    cdata_allowed: bool,
     finished: bool,
 }
 
@@ -116,11 +151,24 @@ impl Tokenizer {
             attribute_value: String::new(),
             attribute_names: HashSet::new(),
             comment: String::new(),
+            pi_target: String::new(),
+            pi_data: String::new(),
+            processing_instructions: true,
             doctype: None,
             identifier_public: false,
             text_end_name: String::new(),
+            script_escape_name: String::new(),
+            cdata_allowed: false,
             finished: false,
         }
+    }
+
+    /// Retain the pre-processing-instruction behavior expected by the older
+    /// html5lib tokenizer snapshot, which treats every `<?` as a bogus comment.
+    pub fn new_legacy_html5lib(input: &str) -> Self {
+        let mut tokenizer = Self::new(input);
+        tokenizer.processing_instructions = false;
+        tokenizer
     }
 
     pub fn enter_rawtext(&mut self, tag: &str) {
@@ -131,6 +179,23 @@ impl Tokenizer {
     }
     pub fn enter_script_data(&mut self, tag: &str) {
         self.enter_text(State::ScriptData, tag);
+    }
+    pub fn enter_plaintext(&mut self) {
+        self.state = State::Plaintext;
+    }
+    pub fn enter_cdata(&mut self) {
+        self.state = State::CdataSection;
+    }
+    pub fn set_last_start_tag(&mut self, tag: &str) {
+        self.last_start_tag = tag.to_owned();
+    }
+    pub fn ignore_next_lf(&mut self) {
+        if self.peek() == Some('\n') {
+            self.take();
+        }
+    }
+    pub fn set_cdata_allowed(&mut self, allowed: bool) {
+        self.cdata_allowed = allowed;
     }
     fn enter_text(&mut self, state: State, tag: &str) {
         self.state = state;
@@ -173,6 +238,19 @@ impl Tokenizer {
     fn emit_comment(&mut self) {
         let comment = std::mem::take(&mut self.comment);
         self.emit(Token::Comment(comment));
+    }
+    fn emit_processing_instruction(&mut self) {
+        let target = std::mem::take(&mut self.pi_target);
+        let data = std::mem::take(&mut self.pi_data);
+        self.emit(Token::ProcessingInstruction { target, data });
+    }
+    fn pi_to_comment(&mut self) {
+        self.comment.clear();
+        self.comment.push('?');
+        self.comment.push_str(&self.pi_target);
+        self.pi_target.clear();
+        self.pi_data.clear();
+        self.state = State::BogusComment;
     }
     fn emit_tag(&mut self) {
         self.finish_attribute();
@@ -228,6 +306,9 @@ impl Tokenizer {
             State::TagOpen => self.text.push('<'),
             State::EndTagOpen => self.text.push_str("</"),
             State::TextLess => self.text.push('<'),
+            State::ScriptEscapedLess => self.text.push('<'),
+            State::CdataSectionBracket => self.text.push(']'),
+            State::CdataSectionEnd => self.text.push_str("]]"),
             State::TextEndName => {
                 self.text.push_str("</");
                 self.text.push_str(&self.text_end_name);
@@ -235,22 +316,14 @@ impl Tokenizer {
             State::CommentStart
             | State::CommentStartDash
             | State::Comment
+            | State::CommentLess
+            | State::CommentLessBang
+            | State::CommentLessBangDash
+            | State::CommentLessBangDashDash
             | State::CommentEndDash
             | State::CommentEnd
             | State::CommentEndBang
             | State::BogusComment => {
-                if self.state == State::CommentStartDash {
-                    self.comment.push('-');
-                }
-                if self.state == State::CommentEndDash {
-                    self.comment.push('-');
-                }
-                if self.state == State::CommentEnd {
-                    self.comment.push_str("--");
-                }
-                if self.state == State::CommentEndBang {
-                    self.comment.push_str("--!");
-                }
                 self.emit_comment();
             }
             State::BeforeDoctypeName
@@ -258,12 +331,20 @@ impl Tokenizer {
             | State::AfterDoctypeName
             | State::AfterDoctypeKeyword
             | State::BeforeDoctypeIdentifier
-            | State::DoctypeIdentifier(_)
-            | State::AfterDoctypeIdentifier
-            | State::BogusDoctype => {
+            | State::DoctypeIdentifier(_) => {
                 self.doctype_mut().force_quirks = true;
                 self.emit_doctype();
             }
+            State::AfterDoctypeIdentifier => {
+                self.doctype_mut().force_quirks = true;
+                self.emit_doctype();
+            }
+            State::BogusDoctype => self.emit_doctype(),
+            State::ProcessingInstructionOpen
+            | State::ProcessingInstructionTarget
+            | State::AfterProcessingInstructionTarget
+            | State::ProcessingInstructionData
+            | State::ProcessingInstructionQuestionable => {}
             State::MarkupDeclarationOpen => self.emit(Token::Comment(String::new())),
             _ => {}
         }
@@ -291,6 +372,10 @@ impl Tokenizer {
     fn step(&mut self) {
         let c = self.peek().unwrap();
         match self.state {
+            State::Plaintext => {
+                self.take();
+                self.text.push(cleaned(c));
+            }
             State::Data | State::Rcdata | State::Rawtext | State::ScriptData => match c {
                 '<' => {
                     self.take();
@@ -306,7 +391,11 @@ impl Tokenizer {
                 }
                 _ => {
                     self.take();
-                    self.text.push(cleaned(c));
+                    self.text.push(if self.state == State::Data {
+                        c
+                    } else {
+                        cleaned(c)
+                    });
                 }
             },
             State::TextLess => {
@@ -314,6 +403,10 @@ impl Tokenizer {
                     self.take();
                     self.text_end_name.clear();
                     self.state = State::TextEndName;
+                } else if self.text_state == State::ScriptData && c == '!' {
+                    self.take();
+                    self.text.push_str("<!");
+                    self.state = State::ScriptEscapeStart;
                 } else {
                     self.text.push('<');
                     self.state = self.text_state;
@@ -323,9 +416,10 @@ impl Tokenizer {
                 if c.is_ascii_alphabetic() {
                     self.take();
                     self.text_end_name.push(c);
-                } else if self
-                    .text_end_name
-                    .eq_ignore_ascii_case(&self.last_start_tag)
+                } else if !self.text_end_name.is_empty()
+                    && self
+                        .text_end_name
+                        .eq_ignore_ascii_case(&self.last_start_tag)
                     && (space(c) || c == '/' || c == '>')
                 {
                     self.start_tag(true);
@@ -346,6 +440,169 @@ impl Tokenizer {
                     self.state = self.text_state;
                 }
             }
+            State::ScriptEscapeStart => {
+                if c == '-' {
+                    self.take();
+                    self.text.push('-');
+                    self.state = State::ScriptEscapeStartDash;
+                } else {
+                    self.state = State::ScriptData;
+                }
+            }
+            State::ScriptEscapeStartDash => {
+                if c == '-' {
+                    self.take();
+                    self.text.push('-');
+                    self.state = State::ScriptEscapedDashDash;
+                } else {
+                    self.state = State::ScriptData;
+                }
+            }
+            State::ScriptEscaped => match c {
+                '-' => {
+                    self.take();
+                    self.text.push('-');
+                    self.state = State::ScriptEscapedDash;
+                }
+                '<' => {
+                    self.take();
+                    self.state = State::ScriptEscapedLess;
+                }
+                _ => {
+                    self.take();
+                    self.text.push(cleaned(c));
+                }
+            },
+            State::ScriptEscapedDash => match c {
+                '-' => {
+                    self.take();
+                    self.text.push('-');
+                    self.state = State::ScriptEscapedDashDash;
+                }
+                '<' => {
+                    self.take();
+                    self.state = State::ScriptEscapedLess;
+                }
+                _ => {
+                    self.state = State::ScriptEscaped;
+                }
+            },
+            State::ScriptEscapedDashDash => match c {
+                '-' => {
+                    self.take();
+                    self.text.push('-');
+                }
+                '<' => {
+                    self.take();
+                    self.state = State::ScriptEscapedLess;
+                }
+                '>' => {
+                    self.take();
+                    self.text.push('>');
+                    self.state = State::ScriptData;
+                }
+                _ => {
+                    self.state = State::ScriptEscaped;
+                }
+            },
+            State::ScriptEscapedLess => {
+                if c == '/' {
+                    self.take();
+                    self.text_end_name.clear();
+                    self.text_state = State::ScriptEscaped;
+                    self.state = State::TextEndName;
+                } else if c.is_ascii_alphabetic() {
+                    self.text.push('<');
+                    self.script_escape_name.clear();
+                    self.state = State::ScriptDoubleEscapeStart;
+                } else {
+                    self.text.push('<');
+                    self.state = State::ScriptEscaped;
+                }
+            }
+            State::ScriptDoubleEscapeStart | State::ScriptDoubleEscapeEnd => {
+                if c.is_ascii_alphabetic() {
+                    self.take();
+                    self.script_escape_name.push(c.to_ascii_lowercase());
+                    self.text.push(c);
+                } else if space(c) || c == '/' || c == '>' {
+                    self.take();
+                    self.text.push(c);
+                    self.state = if self.script_escape_name == "script" {
+                        if self.state == State::ScriptDoubleEscapeStart {
+                            State::ScriptDoubleEscaped
+                        } else {
+                            State::ScriptEscaped
+                        }
+                    } else if self.state == State::ScriptDoubleEscapeStart {
+                        State::ScriptEscaped
+                    } else {
+                        State::ScriptDoubleEscaped
+                    };
+                } else {
+                    self.state = if self.state == State::ScriptDoubleEscapeStart {
+                        State::ScriptEscaped
+                    } else {
+                        State::ScriptDoubleEscaped
+                    };
+                }
+            }
+            State::ScriptDoubleEscaped => match c {
+                '-' => {
+                    self.take();
+                    self.text.push('-');
+                    self.state = State::ScriptDoubleEscapedDash;
+                }
+                '<' => {
+                    self.take();
+                    self.text.push('<');
+                    self.state = State::ScriptDoubleEscapedLess;
+                }
+                _ => {
+                    self.take();
+                    self.text.push(cleaned(c));
+                }
+            },
+            State::ScriptDoubleEscapedDash => match c {
+                '-' => {
+                    self.take();
+                    self.text.push('-');
+                    self.state = State::ScriptDoubleEscapedDashDash;
+                }
+                '<' => {
+                    self.take();
+                    self.text.push('<');
+                    self.state = State::ScriptDoubleEscapedLess;
+                }
+                _ => self.state = State::ScriptDoubleEscaped,
+            },
+            State::ScriptDoubleEscapedDashDash => match c {
+                '-' => {
+                    self.take();
+                    self.text.push('-');
+                }
+                '<' => {
+                    self.take();
+                    self.text.push('<');
+                    self.state = State::ScriptDoubleEscapedLess;
+                }
+                '>' => {
+                    self.take();
+                    self.text.push('>');
+                    self.state = State::ScriptData;
+                }
+                _ => self.state = State::ScriptDoubleEscaped,
+            },
+            State::ScriptDoubleEscapedLess => {
+                if c == '/' {
+                    self.take();
+                    self.text.push('/');
+                    self.script_escape_name.clear();
+                    self.state = State::ScriptDoubleEscapeEnd;
+                } else {
+                    self.state = State::ScriptDoubleEscaped;
+                }
+            }
             State::TagOpen => match c {
                 '!' => {
                     self.take();
@@ -356,10 +613,16 @@ impl Tokenizer {
                     self.state = State::EndTagOpen;
                 }
                 '?' => {
-                    self.comment.clear();
-                    self.comment.push('?');
                     self.take();
-                    self.state = State::BogusComment;
+                    if self.processing_instructions {
+                        self.pi_target.clear();
+                        self.pi_data.clear();
+                        self.state = State::ProcessingInstructionOpen;
+                    } else {
+                        self.comment.clear();
+                        self.comment.push('?');
+                        self.state = State::BogusComment;
+                    }
                 }
                 _ if c.is_ascii_alphabetic() => self.start_tag(false),
                 _ => {
@@ -367,6 +630,62 @@ impl Tokenizer {
                     self.state = State::Data;
                 }
             },
+            State::ProcessingInstructionOpen => {
+                if c.is_ascii_alphabetic() || c == '_' {
+                    self.state = State::ProcessingInstructionTarget;
+                } else {
+                    self.pi_to_comment();
+                }
+            }
+            State::ProcessingInstructionTarget => {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                    self.take();
+                    self.pi_target.push(c);
+                } else if space(c) || matches!(c, '?' | '>') {
+                    if matches!(
+                        self.pi_target.to_ascii_lowercase().as_str(),
+                        "xml" | "xml-stylesheet"
+                    ) {
+                        self.pi_to_comment();
+                    } else {
+                        self.state = State::AfterProcessingInstructionTarget;
+                    }
+                } else {
+                    self.pi_to_comment();
+                }
+            }
+            State::AfterProcessingInstructionTarget => {
+                if space(c) {
+                    self.take();
+                } else {
+                    self.state = State::ProcessingInstructionData;
+                }
+            }
+            State::ProcessingInstructionData => match c {
+                '?' => {
+                    self.take();
+                    self.state = State::ProcessingInstructionQuestionable;
+                }
+                '>' => {
+                    self.take();
+                    self.emit_processing_instruction();
+                    self.state = State::Data;
+                }
+                _ => {
+                    self.take();
+                    self.pi_data.push(c);
+                }
+            },
+            State::ProcessingInstructionQuestionable => {
+                if c == '>' {
+                    self.take();
+                    self.emit_processing_instruction();
+                    self.state = State::Data;
+                } else {
+                    self.pi_data.push('?');
+                    self.state = State::ProcessingInstructionData;
+                }
+            }
             State::EndTagOpen => match c {
                 '>' => {
                     self.take();
@@ -519,7 +838,7 @@ impl Tokenizer {
                     self.take();
                     self.emit_tag();
                 }
-                _ => self.start_attribute(),
+                _ => self.state = State::BeforeAttributeName,
             },
             State::SelfClosingStartTag => {
                 if c == '>' {
@@ -544,9 +863,42 @@ impl Tokenizer {
                         force_quirks: false,
                     });
                     self.state = State::BeforeDoctypeName;
+                } else if self.starts("[CDATA[") && self.cdata_allowed {
+                    self.skip(7);
+                    self.state = State::CdataSection;
                 } else {
                     self.comment.clear();
                     self.state = State::BogusComment;
+                }
+            }
+            State::CdataSection => {
+                self.take();
+                if c == ']' {
+                    self.state = State::CdataSectionBracket;
+                } else {
+                    self.text.push(c);
+                }
+            }
+            State::CdataSectionBracket => {
+                self.take();
+                if c == ']' {
+                    self.state = State::CdataSectionEnd;
+                } else {
+                    self.text.push(']');
+                    self.text.push(c);
+                    self.state = State::CdataSection;
+                }
+            }
+            State::CdataSectionEnd => {
+                self.take();
+                match c {
+                    ']' => self.text.push(']'),
+                    '>' => self.state = State::Data,
+                    _ => {
+                        self.text.push_str("]]");
+                        self.text.push(c);
+                        self.state = State::CdataSection;
+                    }
                 }
             }
             State::BogusComment => {
@@ -587,6 +939,11 @@ impl Tokenizer {
                 }
             },
             State::Comment => match c {
+                '<' => {
+                    self.take();
+                    self.comment.push('<');
+                    self.state = State::CommentLess;
+                }
                 '-' => {
                     self.take();
                     self.state = State::CommentEndDash;
@@ -596,6 +953,35 @@ impl Tokenizer {
                     self.comment.push(cleaned(c));
                 }
             },
+            State::CommentLess => match c {
+                '!' => {
+                    self.take();
+                    self.comment.push('!');
+                    self.state = State::CommentLessBang;
+                }
+                '<' => {
+                    self.take();
+                    self.comment.push('<');
+                }
+                _ => self.state = State::Comment,
+            },
+            State::CommentLessBang => {
+                if c == '-' {
+                    self.take();
+                    self.state = State::CommentLessBangDash;
+                } else {
+                    self.state = State::Comment;
+                }
+            }
+            State::CommentLessBangDash => {
+                if c == '-' {
+                    self.take();
+                    self.state = State::CommentLessBangDashDash;
+                } else {
+                    self.state = State::CommentEndDash;
+                }
+            }
+            State::CommentLessBangDashDash => self.state = State::CommentEnd,
             State::CommentEndDash => match c {
                 '-' => {
                     self.take();
@@ -763,6 +1149,9 @@ impl Tokenizer {
                     self.doctype_mut().system_id = Some(String::new());
                     self.state = State::DoctypeIdentifier(c);
                 } else {
+                    if self.identifier_public {
+                        self.doctype_mut().force_quirks = true;
+                    }
                     self.state = State::BogusDoctype;
                 }
             }
@@ -801,21 +1190,32 @@ impl Tokenizer {
                 self.pos = start - if radix == 16 { 2 } else { 1 };
             }
         } else {
-            let best = NAMED_REFERENCES
+            let mut candidate = String::new();
+            let mut best = None;
+            for &next in self.input[self.pos..]
                 .iter()
-                .filter(|(name, _)| {
-                    self.starts(name)
-                        && !(attribute
-                            && !name.ends_with(';')
-                            && self
-                                .input
-                                .get(self.pos + name.len())
-                                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '='))
-                })
-                .max_by_key(|(name, _)| name.len());
-            if let Some((name, value)) = best {
-                self.skip(name.len());
-                replacement = Some((*value).to_owned());
+                .take(MAX_NAMED_REFERENCE_LENGTH)
+            {
+                if !next.is_ascii_alphanumeric() && next != ';' {
+                    break;
+                }
+                candidate.push(next);
+                if let Ok(index) =
+                    NAMED_REFERENCES.binary_search_by_key(&candidate.as_str(), |(name, _)| name)
+                {
+                    best = Some((candidate.len(), NAMED_REFERENCES[index].1));
+                }
+            }
+            if let Some((length, value)) = best {
+                let following = self.input.get(self.pos + length);
+                let semicolonless = self.input[self.pos + length - 1] != ';';
+                if !(attribute
+                    && semicolonless
+                    && following.is_some_and(|c| c.is_ascii_alphanumeric() || *c == '='))
+                {
+                    self.skip(length);
+                    replacement = Some(value.to_owned());
+                }
             }
         }
         let target = if attribute {
@@ -845,42 +1245,6 @@ fn numeric_reference(value: u32) -> char {
     }
     char::from_u32(value).unwrap_or('\u{fffd}')
 }
-
-const NAMED_REFERENCES: &[(&str, &str)] = &[
-    ("amp;", "&"),
-    ("amp", "&"),
-    ("AMP;", "&"),
-    ("AMP", "&"),
-    ("lt;", "<"),
-    ("lt", "<"),
-    ("LT;", "<"),
-    ("LT", "<"),
-    ("gt;", ">"),
-    ("gt", ">"),
-    ("GT;", ">"),
-    ("GT", ">"),
-    ("quot;", "\""),
-    ("quot", "\""),
-    ("QUOT;", "\""),
-    ("QUOT", "\""),
-    ("apos;", "'"),
-    ("nbsp;", "\u{a0}"),
-    ("nbsp", "\u{a0}"),
-    ("copy;", "©"),
-    ("copy", "©"),
-    ("reg;", "®"),
-    ("reg", "®"),
-    ("trade;", "™"),
-    ("mdash;", "—"),
-    ("ndash;", "–"),
-    ("hellip;", "…"),
-    ("euro;", "€"),
-    ("bull;", "•"),
-    ("lsquo;", "‘"),
-    ("rsquo;", "’"),
-    ("ldquo;", "“"),
-    ("rdquo;", "”"),
-];
 
 #[cfg(test)]
 mod tests {

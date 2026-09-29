@@ -1,0 +1,2 @@
+tests/upstream/tree/*.dat -text
+tests/upstream/tokenizer/*.test -text

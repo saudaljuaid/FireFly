@@ -12,7 +12,7 @@ struct Options {
 }
 
 fn usage() -> &'static str {
-    "Usage: scarlite <input.html|http(s)://url> --output <output.svg> [--width <pixels>]\n\
+    "Usage: scarlite|librefly <input.html|http(s)://url> --output <output.svg> [--width <pixels>]\n\
      Render a local HTML file or web page with the Phos engine."
 }
 

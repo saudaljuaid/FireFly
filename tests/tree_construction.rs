@@ -11,11 +11,22 @@ fn dump(document: &Document) -> String {
                     lines.push(format!("| {indent}content"));
                     walk(document, child, depth + 1, lines);
                 }
-                NodeKind::Doctype(doctype) => lines.push(format!(
-                    "| {indent}<!DOCTYPE {}>",
-                    doctype.name.as_deref().unwrap_or("")
-                )),
+                NodeKind::Doctype(doctype) => {
+                    let name = doctype.name.as_deref().unwrap_or("");
+                    if doctype.public_id.is_some() || doctype.system_id.is_some() {
+                        lines.push(format!(
+                            "| {indent}<!DOCTYPE {name} \"{}\" \"{}\">",
+                            doctype.public_id.as_deref().unwrap_or(""),
+                            doctype.system_id.as_deref().unwrap_or("")
+                        ));
+                    } else {
+                        lines.push(format!("| {indent}<!DOCTYPE {name}>"));
+                    }
+                }
                 NodeKind::Comment(text) => lines.push(format!("| {indent}<!-- {text} -->")),
+                NodeKind::ProcessingInstruction { target, data } => {
+                    lines.push(format!("| {indent}<?{target} {data}?>"));
+                }
                 NodeKind::Text(text) => lines.push(format!("| {indent}\"{text}\"")),
                 NodeKind::Element(element) => {
                     let prefix = match element.namespace {

@@ -11,6 +11,9 @@ readme = "README.md"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 
+[dev-dependencies]
+serde_json = "1"
+
 [lib]
 name = "phos"
 path = "src/lib.rs"
@@ -18,3 +21,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "scarlite"
 path = "src/main.rs"
+
+[[bin]]
+name = "librefly"
+path = "src/bin/librefly.rs"

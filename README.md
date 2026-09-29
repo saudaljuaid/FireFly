@@ -2,97 +2,145 @@
 
 <img src="assets/logo.webp" alt="Scarlite red emblem" width="320">
 
-**Scarlite** is a browser project. **Phos** is its browser engine, written in Rust from the ground up. The project does not embed Chromium, WebKit, or another browser engine.
-
-Phos can load local HTML or fetch a web page over HTTP or HTTPS, follow redirects, load linked stylesheets, and render the result as SVG. It is still an early engine, not an everyday browser. There is no browser window, JavaScript runtime, image rendering, or full web standards support yet.
+**Scarlite** is the browser project formerly named LibreFly. **Phos** is its Rust engine. Phos loads a local HTML file or an HTTP(S) page, builds a document, applies inline and linked CSS, lays out text and boxes, and paints SVG. The library remains named `phos`; both `scarlite` and the existing `librefly` CLI are built. There is no browser window or JavaScript runtime.
 
 ## Try it
 
-Install a current Rust toolchain, then run:
-
 ```sh
-cargo run -- examples/welcome.html --output welcome.svg --width 900
-cargo run -- https://httpbin.org/html --output page.svg --width 900
+cargo run --bin scarlite -- examples/welcome.html --output welcome.svg --width 900
+cargo run --bin librefly -- https://example.com --output example.svg --width 900
 ```
 
-Open the SVG output in an image viewer. Page loading, HTML and CSS processing, layout, and painting are implemented in Phos. TLS certificate verification uses Rustls and the Mozilla root set; building a custom cryptography stack is outside the browser engine's scope. The CLI accepts UTF-8 documents up to 16 MiB. The width must be between 1 and 16,384 pixels.
-
-On Windows with the MSVC Rust target, building also requires the Visual Studio C++ Build Tools linker. WSL with a Linux Rust toolchain works as another development environment.
+The CLI accepts UTF-8 HTML up to 16 MiB and widths from 1 to 16,384 pixels. HTTPS verifies certificates with Rustls and the Mozilla root set. The loader follows up to five redirects, decodes chunked HTTP/1.1 responses, and loads linked stylesheets in document order. It does not handle compressed responses, cookies, caching, proxies, or CSS `@import`. On Windows, an MSVC build needs the Visual Studio C++ Build Tools linker; a GNU Rust target with MinGW is another option.
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --locked
 ```
 
-## How Phos works
+## HTML parser milestone
 
-```text
-file or URL → HTML tokenizer → tree builder → document tree
-                 inline and linked CSS → stylesheet
-document tree + stylesheet → computed styles → layout scene → SVG
-```
+The parser follows the [WHATWG HTML Standard's tokenization and tree-construction algorithms](https://html.spec.whatwg.org/multipage/parsing.html). Its default scripting mode is disabled. `parse_with_scripting(input, true)` selects script-enabled parsing rules, such as `noscript` handling, but does not execute scripts.
 
-The document arena stores nodes by ID. This keeps relationships explicit and avoids a tree of reference counted pointers. The style pass resolves declarations before layout. Layout produces a scene of rectangles and text, so painting has no need to parse HTML or CSS. Each stage has a separate Rust module and can be replaced or expanded without changing the whole pipeline.
+At the starting `main` commit `924a120`, the existing locked test suite passed. The initial diagnostic inventory on the first 55 WPT files found 1,506 passing and 146 failing document trees; fragment and script-on cases were not yet counted by that pass. The initial 11-file html5lib inventory found 6,905 passing and 63 failing representable tokenizer cases, plus four unrepresentable inputs. The final inventories below include additional upstream files and all fragment and script-on cases, so their totals have a broader scope.
 
-The loader uses HTTP/1.1 with bounded response parsing, timeouts, up to five redirects, chunked decoding, and certificate checked HTTPS. It accepts UTF-8 and uncompressed responses. Linked stylesheets are loaded in document order; resource failures are reported without discarding the page. Cookies, caching, proxies, compressed responses, and CSS `@import` are not implemented.
+The tokenizer implements the full 2,231-entry named character-reference table, longest-match and attribute-context rules, numeric references and control-code replacement, data/RCDATA/RAWTEXT/PLAINTEXT, script-data escaped and double-escaped states, foreign-content CDATA, comments, DOCTYPE identifiers and quirks recovery, attributes, end-tag matching, and EOF recovery. It normalizes CR and CRLF to LF. The current tokenizer recognizes processing instructions; `Tokenizer::new_legacy_html5lib` exposes the older bogus-comment behavior needed to compare the historical html5lib tokenizer corpus without changing its expected tokens.
 
-The tokenizer in `src/html/tokenizer.rs` emits DOCTYPE, start tag, end tag, comment, character, and EOF tokens. Tags carry attributes and a self-closing flag. The tree builder in `src/html.rs` consumes one token at a time and owns insertion-mode state. When it inserts a text element, it switches the tokenizer to RCDATA (`title`, `textarea`), RAWTEXT (`style`, `xmp`, `iframe`, `noembed`, `noframes`), or script data, then restores its previous insertion mode at the closing tag or EOF. A `table` start tag changes the tree builder from `in body` to `in table`. Captions switch to `in caption`; explicit `colgroup` and implied `colgroup` for a bare `col` switch to `in column group`. Sections, rows, and cells use `in table body`, `in row`, and `in cell`. Characters directly under a table, section, or row enter `in table text` until the next non-character token. The pending text is then inserted or foster parented as a group, and that token is reprocessed in the previous mode. HTML input remains limited to 16 MiB and nesting to 256 open elements; token reprocessing has a 32-step bound.
+Tree construction implements the `initial`, `before html`, `before head`, `in head`, `in head noscript`, `after head`, `in body`, `text`, `in table`, `in table text`, `in caption`, `in column group`, `in table body`, `in row`, `in cell`, `in template`, `after body`, `after after body`, `in frameset`, `after frameset`, and `after after frameset` insertion modes. It handles implied elements and end tags, table foster parenting, nested tables, select/table transitions, the form-element pointer, frameset replacement, head noscript, active-formatting reconstruction and the bounded adoption-agency algorithm, template mode stacks, and EOF in these modes. SVG and MathML nodes retain their namespaces; foreign-content breakout, integration points, name and attribute adjustments, and CDATA dispatch follow the corresponding rules. Template contents live under a distinct inert arena node; static `selectedcontent` contents are synchronized from the selected option.
 
-Tree construction implements the [HTML Living Standard](https://html.spec.whatwg.org/multipage/parsing.html#tree-construction) `initial`, `before html`, `before head`, `in head`, `after head`, `in body`, `text`, and `in template` insertion modes, plus the `after body` and `after after body` epilogue modes. It creates implied `html`, `head`, and `body` elements, preserves explicit ones, and stores comments and doctypes without rendering them. Head handling covers `base`, `link`, `meta`, `title`, `style`, and `script`, including head content just after `</head>`. In the body, a new paragraph or relevant block closes an open `p`; a new `li` closes the previous list item; unmatched end tags are ignored where the in-body rules require it. A stray `</p>` creates and closes an empty paragraph. Self-closing flags on non-void HTML elements are ignored. Parse errors are recovered where implemented but are not reported.
+`phos::html::parse(input)` returns a complete `Document`. `phos::html::parse_fragment(input, &context)` returns a `Document` whose root children are the fragment nodes; the context element itself is omitted. The context is a `phos::dom::Element` with a namespace, tag, and attributes. Fragment parsing initializes the tokenizer and insertion mode for contexts including `table`, `select`, `textarea`, `script`, `svg`, `math`, and `template`; a `form` context also initializes the form pointer. `parse_fragment_with_scripting` accepts a parser scripting flag. The APIs preserve the 16 MiB input limit, 256-open-element limit, and 32-step bound on reprocessing one token. Repeated malformed-input and boundary tests check those limits and arena consistency.
 
-The table pass implements the core `in table`, `in table text`, `in caption`, `in column group`, `in table body`, `in row`, and `in cell` modes. It inserts explicit sections, rows, cells, captions, column groups, and columns; it implies `tbody` and `tr` when needed and implies `colgroup` for a bare `col`. Column attributes stay on `col`, and whitespace and comments within a column group stay there. Other content closes the column group and is reprocessed in `in table`. Caption content uses body rules; a following caption, column, section, row, cell, or `</table>` closes the caption and reprocesses that token. Table, section, row, cell, caption, and column-group end tags close the appropriate open elements; EOF leaves a partial table in the document. Whitespace-only table text stays in the table; a run containing other characters is foster parented before the nearest table. Unexpected elements directly in a table use the same foster-parenting path. Existing local and loaded-page rendering and stylesheet processing use the resulting document tree.
+The arena stores parent/child links, namespaces, attributes, comments, doctypes, processing instructions, text, and template content. After parsing it retains only reachable nodes, so reparenting and frameset replacement leave no detached internal nodes. Every upstream exact-tree test also checks ownership, unique attributes, parent links, cycles, and template-content placement. Inline and linked stylesheets, local and HTTPS rendering, and visible SVG text were verified through the existing library and CLI paths.
 
-The current standard handles `select`, `option`, and `optgroup` in the body rules, including implied option endings, an incoming `select` closing an open select, and `input` ending a select. Table tokens around a select follow table insertion and foster-parenting rules; this covers the selected legacy select-in-table cases without a separate select insertion mode. `hr` uses the select-specific implied-end-tag step. Scope checks keep select handling from crossing a template boundary.
+### Upstream tokenizer results
 
-SVG and MathML elements carry an explicit namespace in the arena. Foreign-content dispatch handles text, comments, self-closing tags, matching end tags, and HTML breakout tags. It adjusts the specified SVG element and attribute names, MathML `definitionURL`, and recognized XLink, XML, and XMLNS attributes. MathML text integration points, `annotation-xml` with HTML encoding, and SVG `foreignObject`, `desc`, and `title` return eligible tokens to HTML insertion rules. Scope, special-element, and foster-parenting checks account for namespaces.
+The 13 original `.test` files with `tests` arrays from [html5lib-tests](https://github.com/html5lib/html5lib-tests/tree/224991ec10db04f056a89eed8b0bd8695fd2950e/tokenizer) are checked across every declared initial state. “Current” uses Phos's default tokenizer; “legacy” uses its explicit html5lib compatibility mode. The current mode has 11 failures, all historical `<?` bogus-comment expectations superseded by current processing-instruction behavior. Four inputs contain unpaired UTF-16 surrogates and cannot be expressed through Phos's UTF-8 `&str` API. These are counted as unrepresentable in both modes. Token sequences are compared exactly; parse-error lists are not compared.
 
-HTML templates have a stack of template insertion modes, formatting markers, and a content fragment in the arena. Template table tokens select the appropriate table mode; closing tags and EOF unwind nested templates and reset the insertion mode. Content under the fragment is inert for rendering and inline stylesheet collection. The arena's fragment node models the template's content relationship for tree comparisons and parent-link checks.
+| Fixture | Current pass | Current fail | Legacy pass | Legacy fail | Unrepresentable |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `contentModelFlags.test` | 24 | 0 | 24 | 0 | 0 |
+| `domjs.test` | 59 | 0 | 59 | 0 | 0 |
+| `entities.test` | 80 | 0 | 80 | 0 | 0 |
+| `escapeFlag.test` | 9 | 0 | 9 | 0 | 0 |
+| `namedEntities.test` | 4210 | 0 | 4210 | 0 | 0 |
+| `numericEntities.test` | 336 | 0 | 336 | 0 | 0 |
+| `pendingSpecChanges.test` | 1 | 0 | 1 | 0 | 0 |
+| `test1.test` | 69 | 0 | 69 | 0 | 0 |
+| `test2.test` | 43 | 2 | 45 | 0 | 0 |
+| `test3.test` | 1777 | 9 | 1786 | 0 | 0 |
+| `test4.test` | 85 | 0 | 85 | 0 | 0 |
+| `unicodeChars.test` | 323 | 0 | 323 | 0 | 0 |
+| `unicodeCharsProblematic.test` | 1 | 0 | 1 | 0 | 4 |
+| **Total** | **7017** | **11** | **7028** | **0** | **4** |
 
-The tree builder now keeps the [list of active formatting elements](https://html.spec.whatwg.org/multipage/parsing.html#the-list-of-active-formatting-elements) with markers for captions, cells, applets, marquees, and objects. It reconstructs formatting for body text and phrasing content, clears entries at marker boundaries, and keeps at most three identical entries after the last marker. Formatting end tags use the [adoption agency algorithm](https://html.spec.whatwg.org/multipage/parsing.html#adoption-agency-algorithm): it delegates when no active entry exists, reparents nodes through the document arena and foster-parenting insertion location, and bounds its outer loop to eight iterations. The inner loop walks the bounded open-element stack and applies the standard's three-entry rule.
+### Upstream tree-construction results
 
-This remains a partial HTML parser. Head `noscript`, framesets, form-element pointer behavior, fragment parsing, and many unselected tree-construction cases remain unsupported or unverified. Table handling does not imply full table conformance. The tokenizer still lacks the full named character reference table, script escaped and double-escaped states, CDATA, and some comment and DOCTYPE recovery states. The 16 MiB input, 256-open-element, and 32-step token-reprocessing bounds remain in place.
+All 58 non-script-executing `.dat` files from the [WPT parsing resources](https://github.com/web-platform-tests/wpt/tree/7a8d143bce12c1142109d27a8de4b0b26f9f5a47/html/syntax/parsing/resources) are copied intact, including three files marked “unsafe” for the browser test harness. Complete expected trees are compared exactly. “Script on” selects parsing rules only; the four upstream `scripted_*.dat` files require JavaScript execution and are outside this milestone. `0/0` means a fixture has no case of that kind. All 1,953 included cases pass, with zero failing tree comparisons.
 
-Focused token tests compare selected cases from the MIT-licensed [html5lib-tests tokenizer corpus](https://github.com/html5lib/html5lib-tests/tree/master/tokenizer); its notice is in `tests/html5lib-LICENSE`. Selected `test1.test` basic tag, attribute, comment, DOCTYPE, and EOF cases pass. Selected `numericEntities.test` overflow, null, and Windows-1252 cases and `entities.test` unknown-name and attribute cases pass. A RAWTEXT end-tag case from `contentModelFlags.test` also passes. The remaining cases in those files and the other tokenizer fixture groups have not been established as passing; in particular, the full named-entity and script-escape groups remain unsupported.
+| Fixture | Document pass/fail | Fragment pass/fail | Script on pass/fail |
+| --- | ---: | ---: | ---: |
+| `adoption01.dat` | 17/0 | 1/0 | 0/0 |
+| `adoption02.dat` | 4/0 | 0/0 | 0/0 |
+| `blocks.dat` | 48/0 | 0/0 | 0/0 |
+| `comments01.dat` | 16/0 | 0/0 | 0/0 |
+| `doctype01.dat` | 37/0 | 0/0 | 0/0 |
+| `domjs-unsafe.dat` | 49/0 | 0/0 | 0/0 |
+| `entities01.dat` | 75/0 | 0/0 | 0/0 |
+| `entities02.dat` | 26/0 | 0/0 | 0/0 |
+| `foreign-fragment.dat` | 0/0 | 66/0 | 0/0 |
+| `html5test-com.dat` | 30/0 | 0/0 | 0/0 |
+| `inbody01.dat` | 4/0 | 0/0 | 0/0 |
+| `isindex.dat` | 4/0 | 0/0 | 0/0 |
+| `main-element.dat` | 3/0 | 0/0 | 0/0 |
+| `math.dat` | 0/0 | 8/0 | 0/0 |
+| `menuitem-element.dat` | 20/0 | 0/0 | 0/0 |
+| `namespace-sensitivity.dat` | 1/0 | 0/0 | 0/0 |
+| `noscript01.dat` | 18/0 | 0/0 | 0/0 |
+| `pending-spec-changes-plain-text-unsafe.dat` | 1/0 | 0/0 | 0/0 |
+| `pending-spec-changes.dat` | 3/0 | 0/0 | 0/0 |
+| `plain-text-unsafe.dat` | 37/0 | 11/0 | 0/0 |
+| `processing-instructions.dat` | 124/0 | 0/0 | 0/0 |
+| `quirks01.dat` | 4/0 | 0/0 | 0/0 |
+| `ruby.dat` | 21/0 | 0/0 | 0/0 |
+| `scriptdata01.dat` | 26/0 | 0/0 | 0/0 |
+| `search-element.dat` | 3/0 | 0/0 | 0/0 |
+| `svg.dat` | 0/0 | 8/0 | 0/0 |
+| `tables01.dat` | 19/0 | 0/0 | 0/0 |
+| `template.dat` | 123/0 | 4/0 | 0/0 |
+| `tests1.dat` | 112/0 | 0/0 | 0/0 |
+| `tests10.dat` | 54/0 | 0/0 | 0/0 |
+| `tests11.dat` | 13/0 | 0/0 | 0/0 |
+| `tests12.dat` | 2/0 | 0/0 | 0/0 |
+| `tests14.dat` | 7/0 | 0/0 | 0/0 |
+| `tests15.dat` | 14/0 | 0/0 | 0/0 |
+| `tests16.dat` | 191/0 | 0/0 | 6/0 |
+| `tests17.dat` | 13/0 | 0/0 | 0/0 |
+| `tests18.dat` | 36/0 | 0/0 | 0/0 |
+| `tests19.dat` | 103/0 | 0/0 | 0/0 |
+| `tests2.dat` | 63/0 | 0/0 | 0/0 |
+| `tests20.dat` | 64/0 | 0/0 | 0/0 |
+| `tests21.dat` | 23/0 | 0/0 | 0/0 |
+| `tests22.dat` | 5/0 | 0/0 | 0/0 |
+| `tests23.dat` | 5/0 | 0/0 | 0/0 |
+| `tests24.dat` | 8/0 | 0/0 | 0/0 |
+| `tests25.dat` | 26/0 | 0/0 | 0/0 |
+| `tests26.dat` | 20/0 | 0/0 | 0/0 |
+| `tests3.dat` | 24/0 | 0/0 | 0/0 |
+| `tests4.dat` | 0/0 | 9/0 | 0/0 |
+| `tests5.dat` | 16/0 | 0/0 | 1/0 |
+| `tests6.dat` | 39/0 | 13/0 | 0/0 |
+| `tests7.dat` | 33/0 | 1/0 | 0/0 |
+| `tests8.dat` | 10/0 | 0/0 | 0/0 |
+| `tests9.dat` | 27/0 | 0/0 | 0/0 |
+| `tests_innerHTML_1.dat` | 0/0 | 81/0 | 0/0 |
+| `tricky01.dat` | 9/0 | 0/0 | 0/0 |
+| `void-in-phrasing.dat` | 13/0 | 0/0 | 0/0 |
+| `webkit01.dat` | 52/0 | 0/0 | 0/0 |
+| `webkit02.dat` | 44/0 | 4/0 | 1/0 |
+| **Total** | **1739/0** | **206/0** | **8/0** |
 
-Tree tests compare document shape against **278 exact cases** from the html5lib tree-construction corpus, [now maintained in web-platform-tests](https://github.com/web-platform-tests/wpt/tree/master/html/syntax/parsing/resources). The selected case numbers are:
+The original fixtures and their [source and license details](tests/upstream/README.md) are preserved. The older focused fixtures in `tests/fixtures` also remain unchanged. These results cover the listed upstream cases, not every possible HTML input or every browser behavior.
 
-| Fixture | Passing case numbers |
-| --- | --- |
-| `tests1.dat` | #1–10, #34, #50, #55, #84–86, #88 |
-| `tests1-select.dat` (from `tests1.dat`) | #30, #35, #100 |
-| `tests2.dat` | #37–39, #49 |
-| `blocks.dat`, `inbody01.dat`, `scriptdata01.dat`, `doctype01.dat`, `comments01.dat` | #1–4; #1–2; #1–2; #1–2; #1 respectively |
-| `tables01.dat` | #1–19, including the formerly omitted #7–10 and #17–18 |
-| `adoption01.dat`, `adoption02.dat` | #1–16, including the formerly omitted #13; #1–4 respectively |
-| `tests17.dat` | #1–12 |
-| `tests9.dat` | #1–21, #24–26 |
-| `tests10.dat` | #1, #3–20, #23–25 |
-| `tests11.dat` | #1, #3, #5–7, #9–10, #13 |
-| `tests20.dat` | #53–64 |
-| `webkit02.dat` | #23–44 |
-| `template.dat` | #1–39, #50–73, #75–99, #101–113, #125–127 |
+## Current limits and direction
 
-All selected cases pass as exact tree comparisons. Source input and expected trees are in `tests/fixtures`, with the original MIT notice in `tests/html5lib-LICENSE` and the [web-platform-tests BSD notice](https://github.com/web-platform-tests/wpt/blob/master/LICENSE.md) in `tests/wpt-LICENSE`. Assertions compare trees, not parse-error counts, and make no claim about conformance beyond the listed cases. Parent/child consistency is checked for every case, including detached nodes after reparenting. Additional focused tests cover select/table and foreign recovery, template EOF and inertness, formatting reconstruction, nested tables, malformed endings, repeated adversarial input, and the input and nesting limits.
+Phos does not yet report parse errors, sniff encodings or accept a byte-stream input, execute scripts or perform script-driven parser mutations, or provide live DOM behavior such as form association and dynamic `selectedcontent` updates. The fragment API receives one context element, so it cannot infer a `form` ancestor of that element. The tokenizer's UTF-8 API cannot represent unpaired UTF-16 surrogates. Full HTML conformance has not been established. The next parser step is to compare and expose parse errors and to add a byte-stream frontend with encoding preprocessing; script-driven tree construction needs a JavaScript integration design before the four scripted WPT files can be exercised.
 
-The renderer supports common elements, text, `<style>` elements, inline `style` attributes, tag/class/ID selectors, descendant selectors, simple cascade and inheritance, block flow, text wrapping, colors, fixed pixel sizes, margin, and padding. Unsupported CSS properties and selectors are ignored. SVG text measurement uses an estimate; complex scripts and precise font shaping are not implemented.
-
-## Direction
-
-Phos will grow by replacing each provisional piece with standards driven implementations and conformance tests. Remaining parser work includes head `noscript`, framesets, form handling, fragment parsing, more table and adoption cases, and broader tokenizer coverage. A fuller CSS cascade and layout model, precise font shaping, image decoding, and an interactive viewport remain future work. JavaScript, security boundaries, and browser UI need their own designs and tests.
-
-The goal is an independent, maintainable browser engine. Each milestone should be useful and testable on its own, and documentation should state what works without implying that incomplete features are finished.
+Rendering supports common elements, CSS declarations and selectors, block flow, text wrapping, and SVG output. Unsupported CSS rules and properties are ignored. SVG text width is estimated; precise font shaping, image rendering, and an interactive viewport remain future work.
 
 ## Repository map
 
 | Path | Purpose |
 | --- | --- |
-| `src/html/tokenizer.rs`, `src/html.rs`, `src/dom.rs` | HTML tokenization, tree building, and document storage |
-| `src/url.rs`, `src/network.rs` | URL resolution and HTTP/HTTPS loading |
+| `src/html/tokenizer.rs`, `src/html/named_references.rs`, `src/html.rs` | HTML tokenization and tree construction |
+| `src/dom.rs` | Document arena and relationships |
+| `src/network.rs`, `src/url.rs` | HTTP(S) loading and URL resolution |
 | `src/css.rs`, `src/style.rs` | CSS parsing and computed styles |
 | `src/layout.rs`, `src/paint.rs` | Layout scene and SVG output |
-| `src/main.rs` | File and URL rendering command |
+| `src/main.rs` | `scarlite` and `librefly` CLI |
 | `examples/welcome.html` | Small sample document |
 | `assets/logo.webp` | Scarlite logo |
+| `tests/upstream` | Pinned upstream parser corpora |
+| `tools/generate_named_references.py` | Regenerate the WHATWG named-reference table |
 
 Licensed under Apache 2.0. See [LICENSE](LICENSE).
