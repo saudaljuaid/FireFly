@@ -217,7 +217,7 @@ Rendering supports common elements, CSS declarations and selectors, block flow, 
 | `src/network.rs`, `src/url.rs` | HTTP(S) loading and URL resolution |
 | `src/css.rs`, `src/style.rs` | CSS parsing and computed styles |
 | `src/layout.rs`, `src/paint.rs` | Layout scene and SVG output |
-| `src/main.rs` | `scarlite` and `librefly` CLI |
+| `src/main.rs` | `scarlite` CLI |
 | `examples/welcome.html` | Small sample document |
 | `assets/logo.webp` | Scarlite logo |
 | `tests/upstream` | Pinned upstream parser corpora |

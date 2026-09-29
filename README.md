@@ -11,8 +11,6 @@ cargo run --locked --bin scarlite -- examples/welcome.html --output welcome.svg
 cargo run --locked --bin scarlite -- https://example.com --output example.svg
 ```
 
-The `librefly` command is also available. Both commands use Phos.
-
 ## Features
 
 Phos parses HTML, applies inline and linked CSS, lays out text and boxes, and paints SVG.
