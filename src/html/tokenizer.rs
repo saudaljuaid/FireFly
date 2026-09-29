@@ -1,5 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 
+use super::errors::{ErrorPhase, ParseError, SourcePosition};
 use crate::dom::Attribute;
 pub use crate::dom::Doctype;
 
@@ -97,19 +98,32 @@ fn lower(c: char) -> char {
 fn cleaned(c: char) -> char {
     if c == '\0' { '\u{fffd}' } else { c }
 }
+fn is_noncharacter(ch: char) -> bool {
+    let value = ch as u32;
+    (0xfdd0..=0xfdef).contains(&value) || (value & 0xfffe == 0xfffe)
+}
+fn is_disallowed_control(ch: char) -> bool {
+    matches!(ch as u32, 0x01..=0x08 | 0x0b | 0x0e..=0x1f | 0x7f..=0x9f)
+}
 
 pub struct Tokenizer {
     input: Vec<char>,
+    positions: Vec<(u32, u32)>,
+    errors: Vec<ParseError>,
     pos: usize,
     state: State,
     text_state: State,
     last_start_tag: String,
     text: String,
+    text_boundary_position: Option<SourcePosition>,
     ready: VecDeque<Token>,
+    ready_positions: VecDeque<SourcePosition>,
+    token_position: SourcePosition,
     tag: Option<Tag>,
     end_tag: bool,
     attribute_name: String,
     attribute_value: String,
+    attribute_start: usize,
     attribute_names: HashSet<String>,
     comment: String,
     pi_target: String,
@@ -117,6 +131,9 @@ pub struct Tokenizer {
     processing_instructions: bool,
     doctype: Option<Doctype>,
     identifier_public: bool,
+    doctype_space_seen: bool,
+    doctype_identifier_space_seen: bool,
+    last_null_reported: Option<usize>,
     text_end_name: String,
     script_escape_name: String,
     cdata_allowed: bool,
@@ -137,18 +154,59 @@ impl Tokenizer {
                 chars.push(c);
             }
         }
+        let mut positions = Vec::with_capacity(chars.len() + 1);
+        let (mut line, mut column) = (1u32, 1u32);
+        let mut errors = Vec::new();
+        for (offset, &ch) in chars.iter().enumerate() {
+            let position = SourcePosition {
+                offset,
+                line: line as usize,
+                column: column as usize,
+            };
+            positions.push((line, column));
+            if is_noncharacter(ch) {
+                errors.push(ParseError {
+                    code: "noncharacter-in-input-stream",
+                    position,
+                    phase: ErrorPhase::Input,
+                });
+            } else if is_disallowed_control(ch) {
+                errors.push(ParseError {
+                    code: "control-character-in-input-stream",
+                    position,
+                    phase: ErrorPhase::Input,
+                });
+            }
+            if ch == '\n' {
+                line += 1;
+                column = 1;
+            } else {
+                column += ch.len_utf16() as u32;
+            }
+        }
+        positions.push((line, column));
         Self {
             input: chars,
+            positions,
+            errors,
             pos: 0,
             state: State::Data,
             text_state: State::Data,
             last_start_tag: String::new(),
             text: String::new(),
+            text_boundary_position: None,
             ready: VecDeque::new(),
+            ready_positions: VecDeque::new(),
+            token_position: SourcePosition {
+                offset: 0,
+                line: 1,
+                column: 1,
+            },
             tag: None,
             end_tag: false,
             attribute_name: String::new(),
             attribute_value: String::new(),
+            attribute_start: 0,
             attribute_names: HashSet::new(),
             comment: String::new(),
             pi_target: String::new(),
@@ -156,6 +214,9 @@ impl Tokenizer {
             processing_instructions: true,
             doctype: None,
             identifier_public: false,
+            doctype_space_seen: false,
+            doctype_identifier_space_seen: false,
+            last_null_reported: None,
             text_end_name: String::new(),
             script_escape_name: String::new(),
             cdata_allowed: false,
@@ -197,6 +258,54 @@ impl Tokenizer {
     pub fn set_cdata_allowed(&mut self, allowed: bool) {
         self.cdata_allowed = allowed;
     }
+    pub fn errors(&self) -> Vec<ParseError> {
+        let mut errors = self.errors.clone();
+        errors.sort_by_key(|error| (error.position.offset, error.phase as u8));
+        errors
+    }
+    pub fn into_errors(self) -> Vec<ParseError> {
+        let mut errors = self.errors;
+        errors.sort_by_key(|error| (error.position.offset, error.phase as u8));
+        errors
+    }
+    fn position_at(&self, offset: usize) -> SourcePosition {
+        let (line, column) = self.positions[offset];
+        SourcePosition {
+            offset,
+            line: line as usize,
+            column: column as usize,
+        }
+    }
+    pub fn position(&self) -> SourcePosition {
+        self.position_at(self.pos)
+    }
+    pub fn previous_position(&self) -> SourcePosition {
+        self.position_at(self.pos.saturating_sub(1))
+    }
+    pub fn token_position(&self) -> SourcePosition {
+        self.token_position
+    }
+    fn error(&mut self, code: &'static str) {
+        self.errors.push(ParseError {
+            code,
+            position: self.position(),
+            phase: ErrorPhase::Tokenizer,
+        });
+    }
+    fn error_previous(&mut self, code: &'static str) {
+        self.errors.push(ParseError {
+            code,
+            position: self.previous_position(),
+            phase: ErrorPhase::Tokenizer,
+        });
+    }
+    fn error_at(&mut self, code: &'static str, offset: usize) {
+        self.errors.push(ParseError {
+            code,
+            position: self.position_at(offset),
+            phase: ErrorPhase::Tokenizer,
+        });
+    }
     fn enter_text(&mut self, state: State, tag: &str) {
         self.state = state;
         self.last_start_tag = tag.to_owned();
@@ -229,11 +338,17 @@ impl Tokenizer {
         if !self.text.is_empty() {
             self.ready
                 .push_back(Token::Character(std::mem::take(&mut self.text)));
+            self.ready_positions.push_back(
+                self.text_boundary_position
+                    .take()
+                    .unwrap_or_else(|| self.previous_position()),
+            );
         }
     }
     fn emit(&mut self, token: Token) {
         self.flush_text();
         self.ready.push_back(token);
+        self.ready_positions.push_back(self.previous_position());
     }
     fn emit_comment(&mut self) {
         let comment = std::mem::take(&mut self.comment);
@@ -256,6 +371,12 @@ impl Tokenizer {
         self.finish_attribute();
         if let Some(tag) = self.tag.take() {
             if self.end_tag {
+                if !tag.attributes.is_empty() {
+                    self.error_previous("end-tag-with-attributes");
+                }
+                if tag.self_closing {
+                    self.error_previous("end-tag-with-trailing-solidus");
+                }
                 self.emit(Token::EndTag(tag));
             } else {
                 self.last_start_tag = tag.name.clone();
@@ -285,11 +406,14 @@ impl Tokenizer {
                     .unwrap()
                     .attributes
                     .push(Attribute { name, value });
+            } else {
+                self.error_at("duplicate-attribute", self.attribute_start);
             }
         }
     }
     fn start_attribute(&mut self) {
         self.finish_attribute();
+        self.attribute_start = self.pos;
         self.state = State::AttributeName;
     }
     fn emit_doctype(&mut self) {
@@ -302,6 +426,55 @@ impl Tokenizer {
         self.doctype.as_mut().unwrap()
     }
     fn eof(&mut self) {
+        match self.state {
+            State::TagOpen | State::EndTagOpen => self.error("eof-before-tag-name"),
+            State::TagName
+            | State::BeforeAttributeName
+            | State::AttributeName
+            | State::AfterAttributeName
+            | State::BeforeAttributeValue
+            | State::DoubleQuotedValue
+            | State::SingleQuotedValue
+            | State::UnquotedValue
+            | State::AfterQuotedValue
+            | State::SelfClosingStartTag => self.error("eof-in-tag"),
+            State::CommentStart
+            | State::CommentStartDash
+            | State::Comment
+            | State::CommentLess
+            | State::CommentLessBang
+            | State::CommentLessBangDash
+            | State::CommentLessBangDashDash
+            | State::CommentEndDash
+            | State::CommentEnd
+            | State::CommentEndBang => self.error("eof-in-comment"),
+            State::BeforeDoctypeName
+            | State::DoctypeName
+            | State::AfterDoctypeName
+            | State::AfterDoctypeKeyword
+            | State::BeforeDoctypeIdentifier
+            | State::DoctypeIdentifier(_)
+            | State::AfterDoctypeIdentifier => self.error("eof-in-doctype"),
+            State::CdataSection | State::CdataSectionBracket | State::CdataSectionEnd => {
+                self.error("eof-in-cdata")
+            }
+            State::ScriptEscaped
+            | State::ScriptEscapedDash
+            | State::ScriptEscapedDashDash
+            | State::ScriptDoubleEscaped
+            | State::ScriptDoubleEscapedDash
+            | State::ScriptDoubleEscapedDashDash => {
+                self.error("eof-in-script-html-comment-like-text")
+            }
+            State::ProcessingInstructionOpen
+            | State::ProcessingInstructionTarget
+            | State::AfterProcessingInstructionTarget
+            | State::ProcessingInstructionData
+            | State::ProcessingInstructionQuestionable => {
+                self.error("eof-in-processing-instruction")
+            }
+            _ => {}
+        }
         match self.state {
             State::TagOpen => self.text.push('<'),
             State::EndTagOpen => self.text.push_str("</"),
@@ -345,17 +518,22 @@ impl Tokenizer {
             | State::AfterProcessingInstructionTarget
             | State::ProcessingInstructionData
             | State::ProcessingInstructionQuestionable => {}
-            State::MarkupDeclarationOpen => self.emit(Token::Comment(String::new())),
+            State::MarkupDeclarationOpen => {
+                self.error("incorrectly-opened-comment");
+                self.emit(Token::Comment(String::new()));
+            }
             _ => {}
         }
         self.flush_text();
         self.ready.push_back(Token::Eof);
+        self.ready_positions.push_back(self.previous_position());
         self.finished = true;
     }
 
     pub fn next_token(&mut self) -> Option<Token> {
         loop {
             if let Some(token) = self.ready.pop_front() {
+                self.token_position = self.ready_positions.pop_front().unwrap();
                 return Some(token);
             }
             if self.finished {
@@ -371,6 +549,11 @@ impl Tokenizer {
 
     fn step(&mut self) {
         let c = self.peek().unwrap();
+        let start_pos = self.pos;
+        let in_cdata = matches!(
+            self.state,
+            State::CdataSection | State::CdataSectionBracket | State::CdataSectionEnd
+        );
         match self.state {
             State::Plaintext => {
                 self.take();
@@ -378,6 +561,12 @@ impl Tokenizer {
             }
             State::Data | State::Rcdata | State::Rawtext | State::ScriptData => match c {
                 '<' => {
+                    if self.state == State::Data
+                        && !self.text.is_empty()
+                        && self.text_boundary_position.is_none()
+                    {
+                        self.text_boundary_position = Some(self.previous_position());
+                    }
                     self.take();
                     self.text_state = self.state;
                     self.state = if self.text_state == State::Data {
@@ -387,6 +576,12 @@ impl Tokenizer {
                     };
                 }
                 '&' if matches!(self.state, State::Data | State::Rcdata) => {
+                    if self.state == State::Data
+                        && !self.text.is_empty()
+                        && self.text_boundary_position.is_none()
+                    {
+                        self.text_boundary_position = Some(self.previous_position());
+                    }
                     self.character_reference(false)
                 }
                 _ => {
@@ -613,6 +808,9 @@ impl Tokenizer {
                     self.state = State::EndTagOpen;
                 }
                 '?' => {
+                    if !self.processing_instructions {
+                        self.error("unexpected-question-mark-instead-of-tag-name");
+                    }
                     self.take();
                     if self.processing_instructions {
                         self.pi_target.clear();
@@ -626,6 +824,7 @@ impl Tokenizer {
                 }
                 _ if c.is_ascii_alphabetic() => self.start_tag(false),
                 _ => {
+                    self.error("invalid-first-character-of-tag-name");
                     self.text.push('<');
                     self.state = State::Data;
                 }
@@ -634,6 +833,7 @@ impl Tokenizer {
                 if c.is_ascii_alphabetic() || c == '_' {
                     self.state = State::ProcessingInstructionTarget;
                 } else {
+                    self.error("invalid-first-character-of-processing-instruction-target");
                     self.pi_to_comment();
                 }
             }
@@ -688,11 +888,13 @@ impl Tokenizer {
             }
             State::EndTagOpen => match c {
                 '>' => {
+                    self.error("missing-end-tag-name");
                     self.take();
                     self.state = State::Data;
                 }
                 _ if c.is_ascii_alphabetic() => self.start_tag(true),
                 _ => {
+                    self.error("invalid-first-character-of-tag-name");
                     self.comment.clear();
                     self.state = State::BogusComment;
                 }
@@ -728,6 +930,7 @@ impl Tokenizer {
                     self.state = State::SelfClosingStartTag;
                 }
                 '=' => {
+                    self.error("unexpected-equals-sign-before-attribute-name");
                     self.start_attribute();
                     self.attribute_name.push('=');
                     self.take();
@@ -752,8 +955,12 @@ impl Tokenizer {
                     self.state = State::SelfClosingStartTag;
                 }
                 _ => {
+                    if matches!(c, '"' | '\'' | '<') {
+                        self.error("unexpected-character-in-attribute-name");
+                    }
                     self.take();
                     self.attribute_name.push(lower(cleaned(c)));
+                    self.attribute_start = self.pos;
                 }
             },
             State::AfterAttributeName => match c {
@@ -787,6 +994,7 @@ impl Tokenizer {
                     self.state = State::SingleQuotedValue;
                 }
                 '>' => {
+                    self.error("missing-attribute-value");
                     self.take();
                     self.emit_tag();
                 }
@@ -820,6 +1028,9 @@ impl Tokenizer {
                 }
                 '&' => self.character_reference(true),
                 _ => {
+                    if matches!(c, '"' | '\'' | '<' | '=' | '`') {
+                        self.error("unexpected-character-in-unquoted-attribute-value");
+                    }
                     self.take();
                     self.attribute_value.push(cleaned(c));
                 }
@@ -838,7 +1049,10 @@ impl Tokenizer {
                     self.take();
                     self.emit_tag();
                 }
-                _ => self.state = State::BeforeAttributeName,
+                _ => {
+                    self.error("missing-whitespace-between-attributes");
+                    self.state = State::BeforeAttributeName;
+                }
             },
             State::SelfClosingStartTag => {
                 if c == '>' {
@@ -846,6 +1060,7 @@ impl Tokenizer {
                     self.tag.as_mut().unwrap().self_closing = true;
                     self.emit_tag();
                 } else {
+                    self.error("unexpected-solidus-in-tag");
                     self.state = State::BeforeAttributeName;
                 }
             }
@@ -856,6 +1071,7 @@ impl Tokenizer {
                     self.state = State::CommentStart;
                 } else if self.starts_ascii_case("DOCTYPE") {
                     self.skip(7);
+                    self.doctype_space_seen = false;
                     self.doctype = Some(Doctype {
                         name: None,
                         public_id: None,
@@ -867,6 +1083,11 @@ impl Tokenizer {
                     self.skip(7);
                     self.state = State::CdataSection;
                 } else {
+                    if self.starts("[CDATA[") {
+                        self.error_at("cdata-in-html-content", self.pos + 6);
+                    } else {
+                        self.error("incorrectly-opened-comment");
+                    }
                     self.comment.clear();
                     self.state = State::BogusComment;
                 }
@@ -917,6 +1138,7 @@ impl Tokenizer {
                     self.state = State::CommentStartDash;
                 }
                 '>' => {
+                    self.error("abrupt-closing-of-empty-comment");
                     self.take();
                     self.emit_comment();
                     self.state = State::Data;
@@ -929,6 +1151,7 @@ impl Tokenizer {
                     self.state = State::CommentEnd;
                 }
                 '>' => {
+                    self.error("abrupt-closing-of-empty-comment");
                     self.take();
                     self.emit_comment();
                     self.state = State::Data;
@@ -981,7 +1204,12 @@ impl Tokenizer {
                     self.state = State::CommentEndDash;
                 }
             }
-            State::CommentLessBangDashDash => self.state = State::CommentEnd,
+            State::CommentLessBangDashDash => {
+                if c != '>' {
+                    self.error("nested-comment");
+                }
+                self.state = State::CommentEnd;
+            }
             State::CommentEndDash => match c {
                 '-' => {
                     self.take();
@@ -1013,6 +1241,7 @@ impl Tokenizer {
             },
             State::CommentEndBang => match c {
                 '>' => {
+                    self.error("incorrectly-closed-comment");
                     self.take();
                     self.emit_comment();
                     self.state = State::Data;
@@ -1029,14 +1258,19 @@ impl Tokenizer {
             },
             State::BeforeDoctypeName => match c {
                 _ if space(c) => {
+                    self.doctype_space_seen = true;
                     self.take();
                 }
                 '>' => {
+                    self.error("missing-doctype-name");
                     self.take();
                     self.doctype_mut().force_quirks = true;
                     self.emit_doctype();
                 }
                 _ => {
+                    if !self.doctype_space_seen {
+                        self.error("missing-whitespace-before-doctype-name");
+                    }
                     self.doctype_mut().name = Some(String::new());
                     self.state = State::DoctypeName;
                 }
@@ -1074,6 +1308,7 @@ impl Tokenizer {
                     self.identifier_public = false;
                     self.state = State::AfterDoctypeKeyword;
                 } else {
+                    self.error("invalid-character-sequence-after-doctype-name");
                     self.doctype_mut().force_quirks = true;
                     self.state = State::BogusDoctype;
                 }
@@ -1084,14 +1319,29 @@ impl Tokenizer {
                     self.state = State::BeforeDoctypeIdentifier;
                 }
                 '"' | '\'' => {
+                    self.error(if self.identifier_public {
+                        "missing-whitespace-after-doctype-public-keyword"
+                    } else {
+                        "missing-whitespace-after-doctype-system-keyword"
+                    });
                     self.state = State::BeforeDoctypeIdentifier;
                 }
                 '>' => {
+                    self.error(if self.identifier_public {
+                        "missing-doctype-public-identifier"
+                    } else {
+                        "missing-doctype-system-identifier"
+                    });
                     self.take();
                     self.doctype_mut().force_quirks = true;
                     self.emit_doctype();
                 }
                 _ => {
+                    self.error(if self.identifier_public {
+                        "missing-quote-before-doctype-public-identifier"
+                    } else {
+                        "missing-quote-before-doctype-system-identifier"
+                    });
                     self.doctype_mut().force_quirks = true;
                     self.state = State::BogusDoctype;
                 }
@@ -1107,14 +1357,25 @@ impl Tokenizer {
                     } else {
                         self.doctype_mut().system_id = Some(String::new());
                     }
+                    self.doctype_identifier_space_seen = false;
                     self.state = State::DoctypeIdentifier(c);
                 }
                 '>' => {
+                    self.error(if self.identifier_public {
+                        "missing-doctype-public-identifier"
+                    } else {
+                        "missing-doctype-system-identifier"
+                    });
                     self.take();
                     self.doctype_mut().force_quirks = true;
                     self.emit_doctype();
                 }
                 _ => {
+                    self.error(if self.identifier_public {
+                        "missing-quote-before-doctype-public-identifier"
+                    } else {
+                        "missing-quote-before-doctype-system-identifier"
+                    });
                     self.doctype_mut().force_quirks = true;
                     self.state = State::BogusDoctype;
                 }
@@ -1124,6 +1385,11 @@ impl Tokenizer {
                     self.take();
                     self.state = State::AfterDoctypeIdentifier;
                 } else if c == '>' {
+                    self.error(if self.identifier_public {
+                        "abrupt-doctype-public-identifier"
+                    } else {
+                        "abrupt-doctype-system-identifier"
+                    });
                     self.take();
                     self.doctype_mut().force_quirks = true;
                     self.emit_doctype();
@@ -1139,16 +1405,27 @@ impl Tokenizer {
             }
             State::AfterDoctypeIdentifier => {
                 if space(c) {
+                    self.doctype_identifier_space_seen = true;
                     self.take();
                 } else if c == '>' {
                     self.take();
                     self.emit_doctype();
                 } else if self.identifier_public && matches!(c, '"' | '\'') {
+                    if !self.doctype_identifier_space_seen {
+                        self.error(
+                            "missing-whitespace-between-doctype-public-and-system-identifiers",
+                        );
+                    }
                     self.take();
                     self.identifier_public = false;
                     self.doctype_mut().system_id = Some(String::new());
                     self.state = State::DoctypeIdentifier(c);
                 } else {
+                    self.error(if self.identifier_public {
+                        "missing-quote-before-doctype-system-identifier"
+                    } else {
+                        "unexpected-character-after-doctype-system-identifier"
+                    });
                     if self.identifier_public {
                         self.doctype_mut().force_quirks = true;
                     }
@@ -1161,6 +1438,10 @@ impl Tokenizer {
                     self.emit_doctype();
                 }
             }
+        }
+        if c == '\0' && !in_cdata && self.last_null_reported != Some(start_pos) {
+            self.error_at("unexpected-null-character", start_pos);
+            self.last_null_reported = Some(start_pos);
         }
     }
 
@@ -1184,9 +1465,25 @@ impl Tokenizer {
             if self.pos != start {
                 if self.peek() == Some(';') {
                     self.take();
+                } else {
+                    self.error("missing-semicolon-after-character-reference");
+                }
+                if value == 0 {
+                    self.error("null-character-reference");
+                } else if value > 0x10ffff {
+                    self.error("character-reference-outside-unicode-range");
+                } else if (0xd800..=0xdfff).contains(&value) {
+                    self.error("surrogate-character-reference");
+                } else if char::from_u32(value).is_some_and(is_noncharacter) {
+                    self.error("noncharacter-character-reference");
+                } else if (0x01..=0x08).contains(&value)
+                    || matches!(value, 0x0b | 0x0d | 0x0e..=0x1f | 0x7f..=0x9f)
+                {
+                    self.error("control-character-reference");
                 }
                 replacement = Some(numeric_reference(value).to_string());
             } else {
+                self.error("absence-of-digits-in-numeric-character-reference");
                 self.pos = start - if radix == 16 { 2 } else { 1 };
             }
         } else {
@@ -1214,7 +1511,20 @@ impl Tokenizer {
                     && following.is_some_and(|c| c.is_ascii_alphanumeric() || *c == '='))
                 {
                     self.skip(length);
+                    if semicolonless {
+                        self.error("missing-semicolon-after-character-reference");
+                    }
                     replacement = Some(value.to_owned());
+                }
+            } else {
+                let semicolon = self.input[self.pos..]
+                    .iter()
+                    .position(|c| *c == ';' || !c.is_ascii_alphanumeric());
+                if let Some(length) = semicolon
+                    && length > 0
+                    && self.input[self.pos + length] == ';'
+                {
+                    self.error_at("unknown-named-character-reference", self.pos + length);
                 }
             }
         }

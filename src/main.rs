@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phos::{Error, render, render_url};
+use phos::{Error, render_bytes, render_url};
 
 struct Options {
     input: String,
@@ -81,7 +81,7 @@ fn run() -> Result<(), Error> {
         if metadata.len() > 16 * 1024 * 1024 {
             return Err(Error::InvalidInput("HTML input exceeds 16 MiB".into()));
         }
-        render(&fs::read_to_string(input)?, options.width)?
+        render_bytes(&fs::read(input)?, None, options.width)?
     };
     fs::write(&options.output, svg)?;
     println!("Rendered {}", options.output.display());

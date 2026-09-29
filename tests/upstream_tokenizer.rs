@@ -232,15 +232,21 @@ fn inventory_upstream_tokenizer() {
     files.sort();
     let mut totals = (0, 0, 0);
     for path in files {
+        let file = path.file_name().unwrap().to_str().unwrap();
         let fixture: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         let mut passed = 0;
         let mut failed = 0;
         let mut skipped = 0;
         let legacy = std::env::var_os("CORPUS_LEGACY").is_some();
         for (index, case) in fixture["tests"].as_array().unwrap().iter().enumerate() {
-            let Some((input, expected)) = representable_case(case) else {
+            let Some((input, upstream_expected)) = representable_case(case) else {
                 skipped += test_states(case).len();
                 continue;
+            };
+            let expected = if legacy || std::env::var_os("CORPUS_RAW").is_some() {
+                upstream_expected
+            } else {
+                current_pi_expectation(file, index + 1).unwrap_or(upstream_expected)
             };
             let last_tag = case
                 .get("lastStartTag")

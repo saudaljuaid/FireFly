@@ -48,6 +48,19 @@ pub fn render(source: &str, viewport_width: f32) -> Result<String, Error> {
     Ok(render_document(&document, &sheet, viewport_width))
 }
 
+/// Render an HTML byte stream. `transport_content_type` is the final HTTP
+/// response's Content-Type; pass `None` for a local file.
+pub fn render_bytes(
+    source: &[u8],
+    transport_content_type: Option<&str>,
+    viewport_width: f32,
+) -> Result<String, Error> {
+    validate_width(viewport_width)?;
+    let document = html::parse_bytes(source, transport_content_type)?;
+    let sheet = css::parse(&document.stylesheets());
+    Ok(render_document(&document, &sheet, viewport_width))
+}
+
 fn validate_width(viewport_width: f32) -> Result<(), Error> {
     if !viewport_width.is_finite() || viewport_width < 1.0 || viewport_width > 16_384.0 {
         return Err(Error::InvalidInput(
@@ -61,6 +74,16 @@ fn render_document(document: &Document, sheet: &css::Stylesheet, viewport_width:
     let styles = style::compute(document, sheet);
     let scene = layout::layout(document, &styles, viewport_width);
     paint::to_svg(&scene)
+}
+
+fn in_template_content(document: &Document, mut id: usize) -> bool {
+    while let Some(parent) = document.nodes[id].parent {
+        if matches!(document.nodes[parent].kind, NodeKind::TemplateContent) {
+            return true;
+        }
+        id = parent;
+    }
+    false
 }
 
 pub struct LoadedPage {
@@ -84,12 +107,17 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
             )));
         }
     }
-    let document = html::parse(&response.text()?)?;
+    let document = html::parse_bytes(&response.body, response.header("content-type"))?;
     let base_url = document
         .nodes
         .iter()
-        .filter_map(|node| match &node.kind {
-            NodeKind::Element(element) if element.tag == "base" => element.attribute("href"),
+        .enumerate()
+        .filter_map(|(id, node)| match &node.kind {
+            NodeKind::Element(element)
+                if element.tag == "base" && !in_template_content(&document, id) =>
+            {
+                element.attribute("href")
+            }
             _ => None,
         })
         .find_map(|href| response.final_url.join(href).ok())
@@ -98,7 +126,10 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
     let mut warnings = Vec::new();
     let mut stylesheets = 0;
     let mut stylesheet_requests = 0;
-    for node in &document.nodes {
+    for (id, node) in document.nodes.iter().enumerate() {
+        if in_template_content(&document, id) {
+            continue;
+        }
         let NodeKind::Element(element) = &node.kind else {
             continue;
         };
@@ -212,5 +243,38 @@ mod tests {
         assert_eq!(page.stylesheets, 1);
         assert!(page.warnings.is_empty());
         assert_eq!(page.url.path_and_query, "/page");
+    }
+
+    #[test]
+    fn final_redirect_charset_decodes_html_and_keeps_template_styles_inert() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let response: &[u8] = if request.starts_with(b"GET /start ") {
+                    b"HTTP/1.1 302 Found\r\nLocation: /page\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 0\r\n\r\n"
+                } else if request.starts_with(b"GET /page ") {
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=ISO-8859-1\r\nConnection: close\r\n\r\n<meta charset=utf-8><style>h1 {color:#111111}</style><template><style>h1 {color:#ff0000}</style></template><link rel=stylesheet href=/site.css><h1>Price \x80</h1>"
+                } else {
+                    assert!(request.starts_with(b"GET /site.css "));
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nConnection: close\r\n\r\nh1 {color:#123456}"
+                };
+                stream.write_all(response).unwrap();
+            }
+        });
+        let page = render_url(&format!("http://127.0.0.1:{port}/start"), 500.0).unwrap();
+        server.join().unwrap();
+        assert!(page.svg.contains("Price</text>"));
+        assert!(page.svg.contains(">€</text>"));
+        assert!(page.svg.contains("#123456"));
+        assert!(!page.svg.contains("#ff0000"));
+        assert_eq!(page.stylesheets, 1);
     }
 }

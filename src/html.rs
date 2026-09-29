@@ -1,4 +1,8 @@
+pub mod encoding;
+pub mod errors;
 pub mod tokenizer;
+
+pub use errors::{ErrorPhase, ParseError, SourcePosition};
 
 use crate::Error;
 use crate::dom::{Attribute, Doctype, Document, Element, Namespace, NodeId, NodeKind};
@@ -438,6 +442,7 @@ fn is_foreign_breakout(tag: &Tag) -> bool {
 
 struct TreeBuilder {
     document: Document,
+    errors: Vec<ParseError>,
     open: Vec<NodeId>,
     active_formatting: Vec<Option<NodeId>>,
     mode: InsertionMode,
@@ -461,6 +466,7 @@ impl TreeBuilder {
     fn new() -> Self {
         Self {
             document: Document::default(),
+            errors: Vec::new(),
             open: Vec::new(),
             active_formatting: Vec::new(),
             mode: InsertionMode::Initial,
@@ -483,6 +489,14 @@ impl TreeBuilder {
 
     fn current(&self) -> NodeId {
         self.open.last().copied().unwrap_or(0)
+    }
+
+    fn error(&mut self, tokenizer: &Tokenizer, code: &'static str) {
+        self.errors.push(ParseError {
+            code,
+            position: tokenizer.token_position(),
+            phase: ErrorPhase::TreeConstruction,
+        });
     }
 
     fn adjusted_current(&self) -> NodeId {
@@ -1758,12 +1772,36 @@ impl TreeBuilder {
                 self.insert_comment(data);
                 Ok(false)
             }
-            Token::Doctype(_) | Token::Eof => Ok(false),
+            Token::Doctype(_) => {
+                self.error(tokenizer, "unexpected-doctype");
+                Ok(false)
+            }
+            Token::Eof => {
+                if self.fragment_context.is_none()
+                    && self
+                        .open
+                        .iter()
+                        .any(|&id| !matches!(self.name(id), "html" | "head" | "body"))
+                {
+                    self.error(tokenizer, "unclosed-elements-at-eof");
+                }
+                Ok(false)
+            }
             Token::StartTag(tag) => {
                 self.body_start(tag, tokenizer)?;
                 Ok(false)
             }
-            Token::EndTag(tag) => self.body_end(&tag.name),
+            Token::EndTag(tag) => {
+                let known = self.position(&tag.name).is_some()
+                    || self
+                        .active_formatting
+                        .iter()
+                        .any(|entry| entry.is_some_and(|id| self.name(id) == tag.name));
+                if !known || tag.name == "p" && !self.p_in_button_scope() {
+                    self.error(tokenizer, "unmatched-end-tag");
+                }
+                self.body_end(&tag.name)
+            }
             Token::ProcessingInstruction { .. } => {
                 unreachable!("PI tokens are inserted before dispatch")
             }
@@ -1793,7 +1831,10 @@ impl TreeBuilder {
                 self.insert_comment(data);
                 Ok(false)
             }
-            Token::Doctype(_) => Ok(false),
+            Token::Doctype(_) => {
+                self.error(tokenizer, "unexpected-doctype");
+                Ok(false)
+            }
             Token::StartTag(tag) if tag.name == "caption" => {
                 self.clear_to(&["table", "template", "html"]);
                 self.insert(tag)?;
@@ -2339,10 +2380,14 @@ impl TreeBuilder {
                         Token::Doctype(doctype) => {
                             self.document.append(0, NodeKind::Doctype(doctype.clone()));
                             self.quirks_mode = is_quirks_doctype(doctype);
+                            if self.quirks_mode {
+                                self.error(tokenizer, "invalid-doctype");
+                            }
                             self.mode = InsertionMode::BeforeHtml;
                             false
                         }
                         _ => {
+                            self.error(tokenizer, "missing-doctype");
                             self.quirks_mode = true;
                             self.mode = InsertionMode::BeforeHtml;
                             true
@@ -2353,7 +2398,10 @@ impl TreeBuilder {
                             self.document.append(0, NodeKind::Comment(data.clone()));
                             false
                         }
-                        Token::Doctype(_) => false,
+                        Token::Doctype(_) => {
+                            self.error(tokenizer, "unexpected-doctype");
+                            false
+                        }
                         Token::StartTag(tag) if tag.name == "html" => {
                             self.html = Some(self.insert(tag)?);
                             self.mode = InsertionMode::BeforeHead;
@@ -2362,6 +2410,7 @@ impl TreeBuilder {
                         Token::EndTag(tag)
                             if !matches!(tag.name.as_str(), "head" | "body" | "html" | "br") =>
                         {
+                            self.error(tokenizer, "unmatched-end-tag");
                             false
                         }
                         _ => {
@@ -2375,7 +2424,10 @@ impl TreeBuilder {
                             self.insert_comment(data);
                             false
                         }
-                        Token::Doctype(_) => false,
+                        Token::Doctype(_) => {
+                            self.error(tokenizer, "unexpected-doctype");
+                            false
+                        }
                         Token::StartTag(tag) if tag.name == "html" => {
                             self.merge_attributes(self.html.unwrap(), &tag.attributes);
                             false
@@ -2388,6 +2440,7 @@ impl TreeBuilder {
                         Token::EndTag(tag)
                             if !matches!(tag.name.as_str(), "head" | "body" | "html" | "br") =>
                         {
+                            self.error(tokenizer, "unmatched-end-tag");
                             false
                         }
                         _ => {
@@ -2404,7 +2457,10 @@ impl TreeBuilder {
                             self.insert_comment(data);
                             false
                         }
-                        Token::Doctype(_) => false,
+                        Token::Doctype(_) => {
+                            self.error(tokenizer, "unexpected-doctype");
+                            false
+                        }
                         Token::StartTag(tag) if tag.name == "html" => {
                             self.merge_attributes(self.html.unwrap(), &tag.attributes);
                             false
@@ -2561,6 +2617,7 @@ impl TreeBuilder {
                             false
                         }
                         Token::Eof => {
+                            self.error(tokenizer, "eof-in-text");
                             self.open.pop();
                             self.mode = self.original_mode;
                             true
@@ -2634,9 +2691,97 @@ pub fn parse(input: &str) -> Result<Document, Error> {
     parse_with_scripting(input, false)
 }
 
+#[derive(Debug)]
+pub struct ParseReport {
+    pub document: Document,
+    pub errors: Vec<ParseError>,
+}
+
+/// Parse a document and collect nonfatal parser diagnostics.
+pub fn parse_with_errors(input: &str) -> Result<ParseReport, Error> {
+    parse_with_errors_and_scripting(input, false)
+}
+
+pub fn parse_bytes_with_errors(
+    input: &[u8],
+    transport_content_type: Option<&str>,
+) -> Result<ParseReport, Error> {
+    parse_bytes_with_errors_and_scripting(input, transport_content_type, false)
+}
+
+pub fn parse_bytes_with_errors_and_scripting(
+    input: &[u8],
+    transport_content_type: Option<&str>,
+    scripting: bool,
+) -> Result<ParseReport, Error> {
+    let decoded = encoding::decode_html_bytes(input, transport_content_type)?;
+    parse_with_errors_and_scripting(&decoded.text, scripting)
+}
+
+/// Parse an HTML byte stream. Supply the final HTTP response's Content-Type
+/// value for network input, or `None` for local files. The byte stream is
+/// limited to 16 MiB before decoding.
+pub fn parse_bytes(input: &[u8], transport_content_type: Option<&str>) -> Result<Document, Error> {
+    parse_bytes_with_scripting(input, transport_content_type, false)
+}
+
+pub fn parse_bytes_with_scripting(
+    input: &[u8],
+    transport_content_type: Option<&str>,
+    scripting: bool,
+) -> Result<Document, Error> {
+    Ok(parse_bytes_with_errors_and_scripting(input, transport_content_type, scripting)?.document)
+}
+
+/// Parse a byte-stream fragment in an existing element's context.
+pub fn parse_fragment_bytes(
+    input: &[u8],
+    context: &Element,
+    transport_content_type: Option<&str>,
+) -> Result<Document, Error> {
+    parse_fragment_bytes_with_scripting(input, context, transport_content_type, false)
+}
+
+pub fn parse_fragment_bytes_with_scripting(
+    input: &[u8],
+    context: &Element,
+    transport_content_type: Option<&str>,
+    scripting: bool,
+) -> Result<Document, Error> {
+    Ok(parse_fragment_bytes_with_errors_and_scripting(
+        input,
+        context,
+        transport_content_type,
+        scripting,
+    )?
+    .document)
+}
+
+pub fn parse_fragment_bytes_with_errors(
+    input: &[u8],
+    context: &Element,
+    transport_content_type: Option<&str>,
+) -> Result<ParseReport, Error> {
+    parse_fragment_bytes_with_errors_and_scripting(input, context, transport_content_type, false)
+}
+
+pub fn parse_fragment_bytes_with_errors_and_scripting(
+    input: &[u8],
+    context: &Element,
+    transport_content_type: Option<&str>,
+    scripting: bool,
+) -> Result<ParseReport, Error> {
+    let decoded = encoding::decode_html_bytes(input, transport_content_type)?;
+    parse_fragment_with_errors_and_scripting(&decoded.text, context, scripting)
+}
+
 /// Parse a complete HTML document with the parser's scripting mode selected.
 /// This only changes parsing rules such as `noscript`; it does not execute scripts.
 pub fn parse_with_scripting(input: &str, scripting: bool) -> Result<Document, Error> {
+    Ok(parse_with_errors_and_scripting(input, scripting)?.document)
+}
+
+pub fn parse_with_errors_and_scripting(input: &str, scripting: bool) -> Result<ParseReport, Error> {
     if input.len() > 16 * 1024 * 1024 {
         return Err(Error::InvalidInput("HTML input exceeds 16 MiB".into()));
     }
@@ -2658,7 +2803,22 @@ pub fn parse_with_scripting(input: &str, scripting: bool) -> Result<Document, Er
         }
     }
     builder.document.sync_selectedcontent();
-    Ok(builder.document.reachable_clone())
+    let mut errors = tokenizer.into_errors();
+    errors.extend(builder.errors);
+    errors.sort_by_key(|error| {
+        (
+            error.position.offset,
+            match error.phase {
+                ErrorPhase::Input => 0,
+                ErrorPhase::Tokenizer => 1,
+                ErrorPhase::TreeConstruction => 2,
+            },
+        )
+    });
+    Ok(ParseReport {
+        document: builder.document.reachable_clone(),
+        errors,
+    })
 }
 
 /// Parse HTML in the context of an existing element. The returned document's root
@@ -2668,6 +2828,10 @@ pub fn parse_fragment(input: &str, context: &Element) -> Result<Document, Error>
     parse_fragment_with_scripting(input, context, false)
 }
 
+pub fn parse_fragment_with_errors(input: &str, context: &Element) -> Result<ParseReport, Error> {
+    parse_fragment_with_errors_and_scripting(input, context, false)
+}
+
 /// Parse an HTML fragment with a context element and selected parser scripting mode.
 /// The returned document root holds the fragment children and omits the context.
 pub fn parse_fragment_with_scripting(
@@ -2675,6 +2839,14 @@ pub fn parse_fragment_with_scripting(
     context: &Element,
     scripting: bool,
 ) -> Result<Document, Error> {
+    Ok(parse_fragment_with_errors_and_scripting(input, context, scripting)?.document)
+}
+
+pub fn parse_fragment_with_errors_and_scripting(
+    input: &str,
+    context: &Element,
+    scripting: bool,
+) -> Result<ParseReport, Error> {
     if input.len() > 16 * 1024 * 1024 {
         return Err(Error::InvalidInput("HTML input exceeds 16 MiB".into()));
     }
@@ -2721,5 +2893,20 @@ pub fn parse_fragment_with_scripting(
         }
     }
     builder.document.sync_selectedcontent();
-    Ok(builder.document.reachable_clone())
+    let mut errors = tokenizer.into_errors();
+    errors.extend(builder.errors);
+    errors.sort_by_key(|error| {
+        (
+            error.position.offset,
+            match error.phase {
+                ErrorPhase::Input => 0,
+                ErrorPhase::Tokenizer => 1,
+                ErrorPhase::TreeConstruction => 2,
+            },
+        )
+    });
+    Ok(ParseReport {
+        document: builder.document.reachable_clone(),
+        errors,
+    })
 }

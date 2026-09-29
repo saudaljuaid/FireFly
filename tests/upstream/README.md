@@ -20,4 +20,8 @@ html5lib's `doubleEscaped` strings before testing. Four cases containing
 unpaired UTF-16 surrogates cannot be passed to Phos's UTF-8 `&str` API and
 are counted as unrepresentable, not passing. The tree tests compare complete
 serialized trees exactly, and also check arena ownership and parent/child
-integrity for every case. Parse-error lists are currently not compared.
+integrity for every case. `tests/upstream_errors.rs` inventories tokenizer
+errors exactly and compares the representable WPT error lists. WPT cases with
+prose-only positions, unmapped historical names, or a separate `#new-errors`
+block are reported as unrepresentable rather than silently treated as passing.
+The original fixture files remain untouched.
