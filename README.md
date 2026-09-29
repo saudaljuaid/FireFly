@@ -1,8 +1,8 @@
-# FireFly
+# LibreFly
 
-<img src="assets/logo.webp" alt="FireFly logo: a firefly in front of a blue globe" width="320">
+<img src="assets/logo.jpeg" alt="LibreFly logo: an orange winged insect on a blue globe" width="320">
 
-**FireFly** is a browser project. **Phos** is its browser engine, written in Rust from the ground up. The project does not embed Chromium, WebKit, or another browser engine.
+**LibreFly** is a browser project. **Phos** is its browser engine, written in Rust from the ground up. The project does not embed Chromium, WebKit, or another browser engine.
 
 Phos can load local HTML or fetch a web page over HTTP or HTTPS, follow redirects, load linked stylesheets, and render the result as SVG. It is still an early engine, not an everyday browser. There is no browser window, JavaScript runtime, image rendering, or full web standards support yet.
 
@@ -12,7 +12,7 @@ Install a current Rust toolchain, then run:
 
 ```sh
 cargo run -- examples/welcome.html --output welcome.svg --width 900
-cargo run -- https://example.com/ --output example.svg --width 900
+cargo run -- https://httpbin.org/html --output page.svg --width 900
 ```
 
 Open the SVG output in an image viewer. Page loading, HTML and CSS processing, layout, and painting are implemented in Phos. TLS certificate verification uses Rustls and the Mozilla root set; building a custom cryptography stack is outside the browser engine's scope. The CLI accepts UTF-8 documents up to 16 MiB. The width must be between 1 and 16,384 pixels.
@@ -69,6 +69,6 @@ The goal is an independent, maintainable browser engine. Each milestone should b
 | `src/layout.rs`, `src/paint.rs` | Layout scene and SVG output |
 | `src/main.rs` | File and URL rendering command |
 | `examples/welcome.html` | Small sample document |
-| `assets/logo.webp` | FireFly logo |
+| `assets/logo.jpeg` | LibreFly logo |
 
 Licensed under Apache 2.0. See [LICENSE](LICENSE).

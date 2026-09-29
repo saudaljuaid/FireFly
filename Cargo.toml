@@ -1,9 +1,11 @@
 [package]
-name = "firefly"
+name = "librefly"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "A browser engine built from first principles in Rust"
+description = "LibreFly browser project and Phos rendering engine"
+repository = "https://github.com/saudaljuaid/LibreFly"
+readme = "README.md"
 
 [dependencies]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -14,5 +16,5 @@ name = "phos"
 path = "src/lib.rs"
 
 [[bin]]
-name = "firefly"
+name = "librefly"
 path = "src/main.rs"
