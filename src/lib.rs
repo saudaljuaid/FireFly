@@ -4,7 +4,10 @@ pub mod html;
 pub mod layout;
 pub mod network;
 pub mod paint;
+mod paragraph;
+pub mod position;
 pub mod resource;
+pub mod stacking;
 pub mod style;
 pub mod text;
 pub mod url;
@@ -17,6 +20,41 @@ use dom::{Document, NodeKind};
 use layout::ImageSource;
 use network::Client;
 use url::Url;
+
+const MAX_COMBINED_CSS_BYTES: usize = 4 * 1024 * 1024;
+
+fn append_stylesheet(css_source: &mut String, source: &str) -> bool {
+    if css_source
+        .len()
+        .checked_add(source.len())
+        .and_then(|length| length.checked_add(1))
+        .is_none_or(|length| length > MAX_COMBINED_CSS_BYTES)
+    {
+        return false;
+    }
+    css_source.push_str(source);
+    css_source.push('\n');
+    true
+}
+
+fn inline_stylesheets(document: &Document) -> String {
+    let mut source = String::new();
+    for id in document.preorder() {
+        if in_template_content(document, id)
+            || !document
+                .element(id)
+                .is_some_and(|element| element.tag == "style")
+        {
+            continue;
+        }
+        for &child in &document.nodes[id].children {
+            if let NodeKind::Text(text) = &document.nodes[child].kind {
+                append_stylesheet(&mut source, text);
+            }
+        }
+    }
+    source
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -49,7 +87,7 @@ pub fn render(source: &str, viewport_width: f32) -> Result<String, Error> {
     }
     validate_width(viewport_width)?;
     let document = html::parse(source)?;
-    let sheet = css::parse(&document.stylesheets());
+    let sheet = css::parse(&inline_stylesheets(&document));
     Ok(render_document(
         &document,
         &sheet,
@@ -67,7 +105,7 @@ pub fn render_bytes(
 ) -> Result<String, Error> {
     validate_width(viewport_width)?;
     let document = html::parse_bytes(source, transport_content_type)?;
-    let sheet = css::parse(&document.stylesheets());
+    let sheet = css::parse(&inline_stylesheets(&document));
     Ok(render_document(
         &document,
         &sheet,
@@ -141,6 +179,7 @@ pub fn render_file(path: &Path, viewport_width: f32) -> Result<(String, Vec<Stri
     let mut warnings = Vec::new();
     let mut css_source = String::new();
     let mut links = 0;
+    let mut inline_css_limit_reported = false;
     for id in document.preorder() {
         let node = &document.nodes[id];
         if in_template_content(&document, id) {
@@ -152,10 +191,11 @@ pub fn render_file(path: &Path, viewport_width: f32) -> Result<(String, Vec<Stri
         if element.tag == "style" {
             for &child in &node.children {
                 if let NodeKind::Text(text) = &document.nodes[child].kind
-                    && css_source.len() + text.len() <= 4 * 1024 * 1024
+                    && !append_stylesheet(&mut css_source, text)
+                    && !inline_css_limit_reported
                 {
-                    css_source.push_str(text);
-                    css_source.push('\n');
+                    warnings.push("combined stylesheet limit reached".into());
+                    inline_css_limit_reported = true;
                 }
             }
         } else if element.tag == "link"
@@ -188,11 +228,11 @@ pub fn render_file(path: &Path, viewport_width: f32) -> Result<(String, Vec<Stri
                     })
             };
             match loaded {
-                Ok(source) if css_source.len() + source.len() <= 4 * 1024 * 1024 => {
-                    css_source.push_str(&source);
-                    css_source.push('\n');
+                Ok(source) => {
+                    if !append_stylesheet(&mut css_source, &source) {
+                        warnings.push("combined stylesheet limit reached".into());
+                    }
                 }
-                Ok(_) => warnings.push("combined stylesheet limit reached".into()),
                 Err(error) => warnings.push(format!("stylesheet {href}: {error}")),
             }
         }
@@ -272,6 +312,7 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
     let mut warnings = Vec::new();
     let mut stylesheets = 0;
     let mut stylesheet_requests = 0;
+    let mut inline_css_limit_reported = false;
     for id in document.preorder() {
         let node = &document.nodes[id];
         if in_template_content(&document, id) {
@@ -283,9 +324,12 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
         match element.tag.as_str() {
             "style" => {
                 for &child in &node.children {
-                    if let NodeKind::Text(text) = &document.nodes[child].kind {
-                        css_source.push_str(text);
-                        css_source.push('\n');
+                    if let NodeKind::Text(text) = &document.nodes[child].kind
+                        && !append_stylesheet(&mut css_source, text)
+                        && !inline_css_limit_reported
+                    {
+                        warnings.push("combined stylesheet limit reached".into());
+                        inline_css_limit_reported = true;
                     }
                 }
             }
@@ -327,12 +371,10 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
                     });
                 match load {
                     Ok(source) => {
-                        if css_source.len() + source.len() > 4 * 1024 * 1024 {
+                        if !append_stylesheet(&mut css_source, &source) {
                             warnings.push("combined stylesheet limit reached".into());
                             break;
                         }
-                        css_source.push_str(&source);
-                        css_source.push('\n');
                         stylesheets += 1;
                     }
                     Err(error) => warnings.push(format!("stylesheet {href}: {error}")),
@@ -368,6 +410,112 @@ mod tests {
     use super::*;
 
     #[test]
+    fn combined_stylesheet_limit_includes_separator_bytes() {
+        let mut source = " ".repeat(MAX_COMBINED_CSS_BYTES - 2);
+        assert!(append_stylesheet(&mut source, "x"));
+        assert_eq!(source.len(), MAX_COMBINED_CSS_BYTES);
+        assert!(!append_stylesheet(&mut source, ""));
+        assert!(!append_stylesheet(&mut source, "p{color:red}"));
+        assert_eq!(source.len(), MAX_COMBINED_CSS_BYTES);
+        let mut empty = String::new();
+        assert!(!append_stylesheet(
+            &mut empty,
+            &" ".repeat(MAX_COMBINED_CSS_BYTES)
+        ));
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn direct_inline_styles_are_bounded_and_keep_later_valid_rules() {
+        let rule = "p{color:#123456}";
+        let source = format!(
+            "<style>{}</style><template><style>p{{color:#ff0000}}</style></template><style>{rule}</style><p>Alive</p>",
+            " ".repeat(MAX_COMBINED_CSS_BYTES)
+        );
+        let document = html::parse(&source).unwrap();
+        assert_eq!(inline_stylesheets(&document), format!("{rule}\n"));
+        for svg in [
+            render(&source, 320.0).unwrap(),
+            render_bytes(source.as_bytes(), None, 320.0).unwrap(),
+        ] {
+            assert!(svg.contains("#123456"));
+            assert!(!svg.contains("#ff0000"));
+            assert!(svg.contains("Alive"));
+        }
+
+        let mut exact = rule.to_owned();
+        exact.push_str(&" ".repeat(MAX_COMBINED_CSS_BYTES - rule.len() - 1));
+        let document = html::parse(&format!(
+            "<style>{exact}</style><style>p{{color:#ff0000}}</style><p>Alive</p>"
+        ))
+        .unwrap();
+        let bounded = inline_stylesheets(&document);
+        assert_eq!(bounded.len(), MAX_COMBINED_CSS_BYTES);
+        assert!(bounded.starts_with(rule));
+        assert!(!bounded.contains("#ff0000"));
+    }
+
+    #[test]
+    fn local_inline_css_limit_includes_separator_and_keeps_later_rules() {
+        let path = std::env::temp_dir().join(format!(
+            "phos-css-bound-{}-{:?}.html",
+            std::process::id(),
+            thread::current().id()
+        ));
+        let rule = "p{color:#123456}";
+        let rejected = format!(
+            "<style>{}</style><style>{rule}</style><p>Alive</p>",
+            " ".repeat(MAX_COMBINED_CSS_BYTES)
+        );
+        fs::write(&path, rejected).unwrap();
+        let result = render_file(&path, 320.0);
+        fs::remove_file(&path).unwrap();
+        let (svg, warnings) = result.unwrap();
+        assert_eq!(warnings, ["combined stylesheet limit reached"]);
+        assert!(svg.contains("#123456"));
+        assert!(svg.contains("Alive"));
+
+        let mut accepted = rule.to_owned();
+        accepted.push_str(&" ".repeat(MAX_COMBINED_CSS_BYTES - rule.len() - 1));
+        fs::write(
+            &path,
+            format!("<style>{accepted}</style><style>p{{color:#ff0000}}</style><p>Alive</p>"),
+        )
+        .unwrap();
+        let result = render_file(&path, 320.0);
+        fs::remove_file(&path).unwrap();
+        let (svg, warnings) = result.unwrap();
+        assert_eq!(warnings, ["combined stylesheet limit reached"]);
+        assert!(svg.contains("#123456"));
+        assert!(!svg.contains("#ff0000"));
+    }
+
+    #[test]
+    fn oversized_remote_inline_css_keeps_later_styles_and_content() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let mut body = String::from("<style>");
+            body.push_str(&" ".repeat(MAX_COMBINED_CSS_BYTES));
+            body.push_str("p{color:#ff0000}</style><style>p{color:#123456}</style><p>Alive</p>");
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let page = render_url(&format!("http://127.0.0.1:{port}/"), 320.0).unwrap();
+        server.join().unwrap();
+        assert_eq!(page.warnings, ["combined stylesheet limit reached"]);
+        assert!(page.svg.contains("#123456"));
+        assert!(!page.svg.contains("#ff0000"));
+        assert!(page.svg.contains("Alive"));
+    }
+
+    #[test]
     fn loads_redirected_document_and_linked_stylesheet() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -395,7 +543,8 @@ mod tests {
         let page = render_url(&format!("http://127.0.0.1:{port}/start"), 500.0).unwrap();
         server.join().unwrap();
         assert!(page.svg.contains("#123456"));
-        assert!(page.svg.contains(">Hello</text>"));
+        assert!(page.svg.contains(">Hello</title>"));
+        assert!(page.svg.contains("<use href=\"#phos-glyph-"));
         assert_eq!(page.stylesheets, 1);
         assert!(page.warnings.is_empty());
         assert_eq!(page.url.path_and_query, "/page");
@@ -427,8 +576,8 @@ mod tests {
         });
         let page = render_url(&format!("http://127.0.0.1:{port}/start"), 500.0).unwrap();
         server.join().unwrap();
-        assert!(page.svg.contains("Price</text>"));
-        assert!(page.svg.contains(">€</text>"));
+        assert!(page.svg.contains("Price</title>"));
+        assert!(page.svg.contains(">€</title>"));
         assert!(page.svg.contains("#123456"));
         assert!(!page.svg.contains("#ff0000"));
         assert_eq!(page.stylesheets, 1);
@@ -465,7 +614,7 @@ mod tests {
         });
         let page = render_url(&format!("http://127.0.0.1:{port}/start"), 500.0).unwrap();
         server.join().unwrap();
-        assert!(page.svg.contains(">€</text>"));
+        assert!(page.svg.contains(">€</title>"));
         assert!(page.svg.contains("#123456"));
         assert!(page.svg.contains("#654321"));
         assert!(!page.svg.contains("#ff0000"));

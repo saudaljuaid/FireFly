@@ -149,6 +149,40 @@ pub enum TextAlign {
     Left,
     Center,
     Right,
+    Start,
+    End,
+}
+impl TextAlign {
+    pub fn physical(self, direction: Direction) -> Self {
+        match (self, direction) {
+            (Self::Start, Direction::Ltr) | (Self::End, Direction::Rtl) => Self::Left,
+            (Self::Start, Direction::Rtl) | (Self::End, Direction::Ltr) => Self::Right,
+            _ => self,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Ltr,
+    Rtl,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnicodeBidi {
+    Normal,
+    Embed,
+    Isolate,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowWrap {
+    Normal,
+    Anywhere,
+    BreakWord,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Position {
+    Static,
+    Relative,
+    Absolute,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WhiteSpace {
@@ -157,6 +191,13 @@ pub enum WhiteSpace {
     Pre,
     PreWrap,
     PreLine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListStyleType {
+    Disc,
+    Decimal,
+    None,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -203,6 +244,9 @@ impl Edges {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
     pub display: Display,
+    pub position: Position,
+    pub insets: Edges,
+    pub z_index: Option<i32>,
     pub color: Color,
     pub background: Option<Color>,
     pub font_size: f32,
@@ -222,8 +266,14 @@ pub struct ComputedStyle {
     border_color_explicit: bool,
     pub border_radius: Edges,
     pub line_height: f32,
+    /// Unitless/normal values inherit their multiplier; explicit lengths inherit pixels.
+    pub line_height_factor: Option<f32>,
     pub text_align: TextAlign,
     pub white_space: WhiteSpace,
+    pub list_style_type: ListStyleType,
+    pub direction: Direction,
+    pub unicode_bidi: UnicodeBidi,
+    pub overflow_wrap: OverflowWrap,
     pub overflow_hidden: bool,
 }
 
@@ -231,6 +281,14 @@ impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
             display: Display::Inline,
+            position: Position::Static,
+            insets: Edges {
+                top: Length::Auto,
+                right: Length::Auto,
+                bottom: Length::Auto,
+                left: Length::Auto,
+            },
+            z_index: None,
             color: Color::BLACK,
             background: None,
             font_size: 16.0,
@@ -250,8 +308,13 @@ impl Default for ComputedStyle {
             border_color_explicit: false,
             border_radius: Edges::default(),
             line_height: 19.2,
-            text_align: TextAlign::Left,
+            line_height_factor: Some(1.2),
+            text_align: TextAlign::Start,
             white_space: WhiteSpace::Normal,
+            list_style_type: ListStyleType::Disc,
+            direction: Direction::Ltr,
+            unicode_bidi: UnicodeBidi::Normal,
+            overflow_wrap: OverflowWrap::BreakWord,
             overflow_hidden: false,
         }
     }
@@ -332,8 +395,12 @@ impl ComputedStyle {
             font_size: parent.font_size,
             bold: parent.bold,
             line_height: parent.line_height,
+            line_height_factor: parent.line_height_factor,
             text_align: parent.text_align,
             white_space: parent.white_space,
+            list_style_type: parent.list_style_type,
+            direction: parent.direction,
+            overflow_wrap: parent.overflow_wrap,
             ..Self::default()
         }
     }
@@ -346,11 +413,68 @@ impl ComputedStyle {
             length(part, font_size, root_font, auto, negative)
         };
         match declaration.name.as_str() {
+            "list-style-type" | "list-style" => match value {
+                "disc" => self.list_style_type = ListStyleType::Disc,
+                "decimal" => self.list_style_type = ListStyleType::Decimal,
+                "none" => self.list_style_type = ListStyleType::None,
+                _ => {}
+            },
             "display" => match value {
                 "block" => self.display = Display::Block,
                 "inline" => self.display = Display::Inline,
                 "inline-block" => self.display = Display::InlineBlock,
                 "none" => self.display = Display::None,
+                _ => {}
+            },
+            "position" => match value {
+                "static" => self.position = Position::Static,
+                "relative" => self.position = Position::Relative,
+                "absolute" => self.position = Position::Absolute,
+                _ => {}
+            },
+            "top" | "right" | "bottom" | "left" => {
+                if let Some(offset) = unit(value, true, true) {
+                    match declaration.name.as_str() {
+                        "top" => self.insets.top = offset,
+                        "right" => self.insets.right = offset,
+                        "bottom" => self.insets.bottom = offset,
+                        _ => self.insets.left = offset,
+                    }
+                }
+            }
+            "inset" => {
+                let offsets: Option<Vec<_>> = value
+                    .split_ascii_whitespace()
+                    .map(|part| unit(part, true, true))
+                    .collect();
+                if let Some(offsets) = offsets.and_then(|values| Edges::shorthand(&values)) {
+                    self.insets = offsets;
+                }
+            }
+            "z-index" => {
+                if value == "auto" {
+                    self.z_index = None;
+                } else if let Ok(index) = value.parse::<i32>()
+                    && (-32_768..=32_767).contains(&index)
+                {
+                    self.z_index = Some(index);
+                }
+            }
+            "direction" => match value {
+                "ltr" => self.direction = Direction::Ltr,
+                "rtl" => self.direction = Direction::Rtl,
+                _ => {}
+            },
+            "unicode-bidi" => match value {
+                "normal" => self.unicode_bidi = UnicodeBidi::Normal,
+                "embed" => self.unicode_bidi = UnicodeBidi::Embed,
+                "isolate" => self.unicode_bidi = UnicodeBidi::Isolate,
+                _ => {}
+            },
+            "overflow-wrap" => match value {
+                "normal" => self.overflow_wrap = OverflowWrap::Normal,
+                "anywhere" => self.overflow_wrap = OverflowWrap::Anywhere,
+                "break-word" => self.overflow_wrap = OverflowWrap::BreakWord,
                 _ => {}
             },
             "color" => {
@@ -369,7 +493,9 @@ impl ComputedStyle {
                     .filter(|size| (1.0..=1024.0).contains(size))
                 {
                     self.font_size = size;
-                    self.line_height = size * 1.2;
+                    if let Some(factor) = self.line_height_factor {
+                        self.line_height = size * factor;
+                    }
                 }
             }
             "font-weight" => match value {
@@ -509,21 +635,26 @@ impl ComputedStyle {
             "line-height" => {
                 if value == "normal" {
                     self.line_height = self.font_size * 1.2;
+                    self.line_height_factor = Some(1.2);
                 } else if let Ok(multiplier) = value.parse::<f32>() {
                     if multiplier.is_finite() && (0.1..=10.0).contains(&multiplier) {
                         self.line_height = self.font_size * multiplier;
+                        self.line_height_factor = Some(multiplier);
                     }
                 } else if let Some(line) =
                     unit(value, false, false).and_then(|line| line.resolve(self.font_size))
-                    && line >= 1.0
+                    && (1.0..=1_000_000.0).contains(&line)
                 {
                     self.line_height = line;
+                    self.line_height_factor = None;
                 }
             }
             "text-align" => match value {
-                "left" | "start" => self.text_align = TextAlign::Left,
+                "left" => self.text_align = TextAlign::Left,
+                "start" => self.text_align = TextAlign::Start,
                 "center" => self.text_align = TextAlign::Center,
-                "right" | "end" => self.text_align = TextAlign::Right,
+                "right" => self.text_align = TextAlign::Right,
+                "end" => self.text_align = TextAlign::End,
                 _ => {}
             },
             "white-space" => match value {
@@ -611,11 +742,21 @@ fn user_agent_style(tag: &str, style: &mut ComputedStyle) {
         "b" | "strong" => style.bold = true,
         "small" => style.font_size *= 0.8,
         "pre" => style.white_space = WhiteSpace::Pre,
+        "ul" => {
+            style.padding.left = Length::Px(40.0);
+            style.list_style_type = ListStyleType::Disc;
+        }
+        "ol" => {
+            style.padding.left = Length::Px(40.0);
+            style.list_style_type = ListStyleType::Decimal;
+        }
         "img" => style.display = Display::InlineBlock,
         _ => {}
     }
-    if style.font_size != inherited_size {
-        style.line_height = style.font_size * 1.2;
+    if style.font_size != inherited_size
+        && let Some(factor) = style.line_height_factor
+    {
+        style.line_height = style.font_size * factor;
     }
 }
 
@@ -630,6 +771,16 @@ fn compute_node(
     let mut style = ComputedStyle::inherit(inherited);
     if let Some(element) = document.element(id) {
         user_agent_style(&element.tag, &mut style);
+        if let Some(direction) = element.attribute("dir") {
+            if direction.eq_ignore_ascii_case("ltr") {
+                style.direction = Direction::Ltr;
+            } else if direction.eq_ignore_ascii_case("rtl") {
+                style.direction = Direction::Rtl;
+            }
+        }
+        if element.tag == "bdi" {
+            style.unicode_bidi = UnicodeBidi::Isolate;
+        }
         // Author declarations are ordered by importance, style attributes,
         // selector specificity, then their exact order in the source.
         let mut matched = Vec::new();
@@ -672,8 +823,22 @@ fn compute_node(
                     )
                 },
             );
+            // Resolve the cascaded font size before properties whose em or
+            // percentage values depend on it, regardless of declaration order.
+            for (_, _, _, _, _, declaration) in &matched {
+                if declaration.name == "font-size" {
+                    style.apply(declaration, inherited.font_size, root_font);
+                }
+            }
+            let property_root_font = if element.tag == "html" {
+                style.font_size
+            } else {
+                root_font
+            };
             for (_, _, _, _, _, declaration) in matched {
-                style.apply(declaration, inherited.font_size, root_font);
+                if declaration.name != "font-size" {
+                    style.apply(declaration, inherited.font_size, property_root_font);
+                }
             }
         } else {
             matched.sort_by_key(
@@ -687,13 +852,28 @@ fn compute_node(
                     )
                 },
             );
+            for (_, _, _, _, _, declaration) in &matched {
+                if declaration.name == "font-size" {
+                    style.apply(declaration, inherited.font_size, root_font);
+                }
+            }
+            let property_root_font = if element.tag == "html" {
+                style.font_size
+            } else {
+                root_font
+            };
             for (_, _, _, _, _, declaration) in matched {
-                style.apply(declaration, inherited.font_size, root_font);
+                if declaration.name != "font-size" {
+                    style.apply(declaration, inherited.font_size, property_root_font);
+                }
             }
         }
     }
     if !style.border_color_explicit {
         style.border_color = style.color;
+    }
+    if style.position == Position::Absolute && style.display != Display::None {
+        style.display = Display::Block;
     }
     styles[id] = style.clone();
     let root_font = if document
@@ -738,6 +918,100 @@ pub fn is_visible(document: &Document, styles: &[ComputedStyle], node: NodeId) -
 mod tests {
     use super::*;
     use crate::html;
+
+    fn by_id(document: &Document, value: &str) -> NodeId {
+        document
+            .nodes
+            .iter()
+            .position(|node| matches!(&node.kind, NodeKind::Element(element) if element.attribute("id") == Some(value)))
+            .unwrap()
+    }
+
+    #[test]
+    fn positioned_styles_are_bounded_and_not_inherited() {
+        let document = html::parse("<div id=p style='position:relative;inset:1em 10% -3px auto;z-index:-32768;direction:rtl;unicode-bidi:isolate;overflow-wrap:anywhere'><span id=c>text</span></div><span id=a style='position:absolute;z-index:32767;left:-2rem;top:50%'>overlay</span><div id=bad style='position:fixed;left:NaNpx;z-index:32768'></div>").unwrap();
+        let styles = compute(&document, &Stylesheet::default());
+        let parent = &styles[by_id(&document, "p")];
+        let child = &styles[by_id(&document, "c")];
+        let absolute = &styles[by_id(&document, "a")];
+        let bad = &styles[by_id(&document, "bad")];
+        assert_eq!(parent.position, Position::Relative);
+        assert_eq!(parent.insets.top, Length::Px(16.0));
+        assert_eq!(parent.insets.right, Length::Percent(10.0));
+        assert_eq!(parent.insets.bottom, Length::Px(-3.0));
+        assert_eq!(parent.insets.left, Length::Auto);
+        assert_eq!(parent.z_index, Some(-32_768));
+        assert_eq!(child.position, Position::Static);
+        assert_eq!(child.insets.top, Length::Auto);
+        assert_eq!(child.z_index, None);
+        assert_eq!(child.direction, Direction::Rtl);
+        assert_eq!(child.unicode_bidi, UnicodeBidi::Normal);
+        assert_eq!(child.overflow_wrap, OverflowWrap::Anywhere);
+        assert_eq!(absolute.display, Display::Block);
+        assert_eq!(absolute.insets.left, Length::Px(-32.0));
+        assert_eq!(absolute.insets.top, Length::Percent(50.0));
+        assert_eq!(absolute.z_index, Some(32_767));
+        assert_eq!(bad.position, Position::Static);
+        assert_eq!(bad.insets.left, Length::Auto);
+        assert_eq!(bad.z_index, None);
+    }
+
+    #[test]
+    fn direction_and_logical_alignment_follow_inheritance_and_cascade() {
+        let document = html::parse("<div dir=rtl><span id=logical style='text-align:end'>text</span><span id=override dir=ltr style='direction:rtl;unicode-bidi:embed'>text</span><bdi id=isolate>Latin</bdi></div>").unwrap();
+        let styles = compute(&document, &Stylesheet::default());
+        let logical = &styles[by_id(&document, "logical")];
+        assert_eq!(logical.direction, Direction::Rtl);
+        assert_eq!(logical.text_align, TextAlign::End);
+        assert_eq!(
+            logical.text_align.physical(logical.direction),
+            TextAlign::Left
+        );
+        assert_eq!(TextAlign::Start.physical(Direction::Rtl), TextAlign::Right);
+        assert_eq!(TextAlign::End.physical(Direction::Ltr), TextAlign::Right);
+        let overridden = &styles[by_id(&document, "override")];
+        assert_eq!(overridden.direction, Direction::Rtl);
+        assert_eq!(overridden.unicode_bidi, UnicodeBidi::Embed);
+        assert_eq!(
+            styles[by_id(&document, "isolate")].unicode_bidi,
+            UnicodeBidi::Isolate
+        );
+    }
+
+    #[test]
+    fn inherited_unitless_line_height_tracks_font_size_but_lengths_do_not() {
+        let document = html::parse("<div style='font-size:20px;line-height:1.5'><span id=factor style='font-size:40px'>text</span></div><div style='line-height:30px'><span id=length style='font-size:40px'>text</span><h1 id=heading>text</h1></div><span id=order style='line-height:2;font-size:25px'>text</span>").unwrap();
+        let styles = compute(&document, &Stylesheet::default());
+        let factor = &styles[by_id(&document, "factor")];
+        assert_eq!(factor.line_height, 60.0);
+        assert_eq!(factor.line_height_factor, Some(1.5));
+        assert_eq!(styles[by_id(&document, "length")].line_height, 30.0);
+        assert_eq!(styles[by_id(&document, "heading")].line_height, 30.0);
+        assert_eq!(styles[by_id(&document, "order")].line_height, 50.0);
+    }
+
+    #[test]
+    fn font_relative_values_use_cascaded_size_independent_of_declaration_order() {
+        let document = html::parse("<style>.sheet{line-height:150%;padding:1em;width:10em;font-size:20px}#winning{font-size:30px!important}</style><p id=sheet class=sheet>text</p><p id=early style='font-size:20px;line-height:150%;padding:1em;width:10em'>text</p><p id=late style='line-height:150%;padding:1em;width:10em;font-size:20px'>text</p><p id=winning class=sheet style='font-size:10px'>text</p>").unwrap();
+        let styles = compute(&document, &css::parse(&document.stylesheets()));
+        for id in ["sheet", "early", "late", "winning"] {
+            let style = &styles[by_id(&document, id)];
+            let size = if id == "winning" { 30.0 } else { 20.0 };
+            assert_eq!(style.font_size, size);
+            assert_eq!(style.line_height, size * 1.5);
+            assert_eq!(style.line_height_factor, None);
+            assert_eq!(style.padding.top, Length::Px(size));
+            assert_eq!(style.padding.left, Length::Px(size));
+            assert_eq!(style.width, Some(Length::Px(size * 10.0)));
+        }
+        let root = html::parse("<html id=root style='padding:1rem;width:10rem;line-height:1.5rem;font-size:2rem'><p>text</p></html>").unwrap();
+        let styles = compute(&root, &Stylesheet::default());
+        let style = &styles[by_id(&root, "root")];
+        assert_eq!(style.font_size, 32.0);
+        assert_eq!(style.line_height, 48.0);
+        assert_eq!(style.padding.top, Length::Px(32.0));
+        assert_eq!(style.width, Some(Length::Px(320.0)));
+    }
 
     #[test]
     fn cascade_and_inheritance() {

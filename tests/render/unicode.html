@@ -1,0 +1,22 @@
+<!doctype html><meta charset="utf-8"><title>Original Unicode wrapping fixture</title>
+<style>
+html,body{margin:0}body{font-size:16px;line-height:24px;color:#172033}
+section{margin:8px;padding:8px;border:1px solid #6c7890}p{margin:0 0 12px}
+.nowrap{white-space:nowrap}.pre{white-space:pre}.prewrap{white-space:pre-wrap}.preline{white-space:pre-line}
+</style>
+<section>
+<p class="prose">ASCII prose: punctuation, (parentheses), well-known hyphens and https://example.test/a-long-path?first=one&amp;second=two. Café, naïve, résumé; decomposed é and Å stay together.</p>
+<p class="cjk">静的なページの文章は狭い画面でも読みやすく表示されます。中文没有空格也应该在合适的位置换行。Latin words 与中文混合。</p>
+<p class="nonbreak">Keep&nbsp;these&nbsp;words together. Narrow no-break spaces remain attached. Repeated punctuation: !!!!!!!!!!!!!!!!!!!!</p>
+<p class="across">  Leading <b>bold </b><span>and</span> adjacent <a>inline text </a> trailing   </p>
+<p class="nowrap">This nowrap phrase remains on one line even when the viewport is narrow.</p>
+<p class="pre">first	column
+
+third line</p>
+<p class="prewrap">  Preserved spaces and	one tab can wrap across a narrow line.
+Last preserved line.</p>
+<p class="preline">  Collapsed spaces
+
+preserved newlines  </p>
+<p class="breaks"><br>before<br><br>after<br><span></span></p>
+</section>

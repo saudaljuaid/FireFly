@@ -87,6 +87,9 @@ fn run() -> Result<(), Error> {
         }
         svg
     };
+    if svg.starts_with("<svg data-phos-truncated=\"true\"") {
+        eprintln!("scarlite: rendering budget reached; output contains a bounded prefix");
+    }
     fs::write(&options.output, svg)?;
     println!("Rendered {}", options.output.display());
     Ok(())

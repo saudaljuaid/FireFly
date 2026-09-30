@@ -1,0 +1,21 @@
+<!doctype html><meta charset="utf-8"><title>Original inline geometry fixture</title>
+<style>
+html,body{margin:0}body{font-size:16px;line-height:24px;color:#182335}section{margin:8px;padding:8px;border:1px solid #687791}
+p{margin:0 0 20px}.badge{padding:2px 6px;border:1px solid #27694b;background:#def4e8;border-radius:4px}
+.link{color:#164ccc;padding:2px 3px;border:1px solid #7890e0;background:#eef2ff}.large{font-size:32px;line-height:40px}.card{display:inline-block;width:72px;height:38px;padding:4px;border:1px solid #9d6936;background:#fff0d5}
+img{width:24px;height:12px}.center{text-align:center}.right{text-align:right}.empty{white-space:pre;line-height:28px}
+</style>
+<section>
+<p class="weights">Normal text and <b>bold text</b> share a baseline.</p>
+<p class="wrapped"><a class="link">A decorated inline link wraps across several line fragments with its text.</a></p>
+<p class="badged">State <span class="badge">Ready</span> beside ordinary text.</p>
+<p class="image">Before <img src="two-pixels.png" alt="pixel"> after an inline image.</p>
+<p class="atomic">Text <span class="card">Card</span> beside an inline-block.</p>
+<p class="size">Small <span class="large">Large</span> small on a shared baseline.</p>
+<p class="only-image"><img src="two-pixels.png" alt="pixel"></p>
+<p class="only-atomic"><span class="card">Card</span></p>
+<p class="center">Centered text.</p><p class="right">Right aligned text.</p>
+<p class="empty">first
+
+third</p><p class="br">one<br><br>three</p>
+</section>

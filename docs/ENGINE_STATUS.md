@@ -28,7 +28,7 @@ Byte decoding follows [HTML encoding sniffing and encoding changes](https://html
 
 `parse_with_errors` and its byte and fragment variants return a `ParseReport { document, errors }`. Each diagnostic has a stable kebab-case code, an input/tokenizer/tree phase, and a position after newline normalization and BOM removal. Offset counts Unicode scalar values from zero; line and UTF-16-code-unit column count from one. Token positions refer to the tokenizer's position at token completion; table-text recovery uses the buffered character token's position. Reprocessing keeps that position and suppresses duplicate reports for one token and code, while nested templates can each report their own EOF recovery error. Diagnostics never change the recovered tree. WPT comparison uses its one-based `(line,column)` coordinates after CRLF normalization; prose locations and historical names without an equivalent code are unrepresentable, while representable list and position differences are failures.
 
-The arena stores parent/child links, namespaces, attributes, comments, doctypes, processing instructions, text, and template content. After parsing it retains only reachable nodes, so reparenting and frameset replacement leave no detached internal nodes. Every upstream exact-tree test also checks ownership, unique attributes, parent links, cycles, and template-content placement. Inline and linked stylesheets, local and HTTPS rendering, and visible SVG text were verified through the library and both CLI names. HTTP stylesheets and base URLs inside template content are ignored.
+The arena stores parent/child links, namespaces, attributes, comments, doctypes, processing instructions, text, and template content. After parsing it retains only reachable nodes, so reparenting and frameset replacement leave no detached internal nodes. Every upstream exact-tree test also checks ownership, unique attributes, parent links, cycles, and template-content placement. Inline and linked stylesheets, local and HTTPS rendering, and SVG glyph output are verified through the library and the scarlite CLI. HTTP stylesheets and base URLs inside template content are ignored.
 
 ### Upstream tokenizer results
 
@@ -206,7 +206,29 @@ The tokenizer error inventory compares the original html5lib error lists with `T
 
 Phos reports exact tokenizer errors for the representable pinned html5lib cases. Tree diagnostics now cover recovery across insertion modes, foreign content, templates, adoption agency, reprocessing, EOF, and fragments, but the WPT inventory above still contains exact-list and position mismatches and historical expectations that cannot be compared one-to-one. The byte frontend supports a single in-tree late-meta restart with original bytes; it does not implement statistical or locale-sensitive fallback detection, and its documented fallback is UTF-8. The fragment API receives one context element, so it cannot infer a `form` ancestor. The `&str` tokenizer cannot represent unpaired UTF-16 surrogates. Phos does not execute scripts or provide live DOM behavior such as form association and dynamic `selectedcontent` updates. Full HTML conformance has not been established. The next parser step is to reconcile the remaining representable WPT error-list mismatches by individual recovery branch and source position.
 
-The next Phos milestone adds bounded CSS declaration scanning, explicit author cascade order and importance, a block/inline/inline-block box model, deterministic bundled-font metrics, rounded backgrounds and borders, clipping, and bounded PNG/JPEG image loading. The [rendering matrix, fixture inventory, examples, and remaining gaps](RENDERING.md) describe the deliberate subset. Precise international text shaping and an interactive viewport remain future work.
+Phos now has bounded CSS declaration scanning, explicit author cascade ordering,
+block/inline/inline-block flow, rounded backgrounds/borders, clipping, and bounded
+PNG/JPEG loading. Text layout and SVG painting share resolved HarfRust glyph
+runs, fixed DejaVu/CJK fallback, Unicode line opportunities, grapheme boundaries,
+and a tested horizontal Arabic/Hebrew bidi subset. Baselines, sliced inline
+decorations, basic list markers, relative/absolute positioning, and local
+z-index paint phases support ordinary static pages. This does not establish full
+CSS, Unicode, font, or browser conformance. The
+[rendering matrix, limits, fixtures, and examples](RENDERING.md) records the exact
+subset, outline-SVG text-selection tradeoff, physical-left RTL list-marker
+limitation, fragmented-inline containing/stacking gaps, and remaining parser
+diagnostics separately.
+
+The current source inventory has 21 rendering HTML fixtures, one PNG, and one
+CSS file; pinned parser corpus counts above remain unchanged. The final local
+locked suite passes 167 tests, zero failed, three intentionally ignored
+diagnostics; 71 integration checks cover rendering/text/positioning. Formatting,
+Clippy with warnings denied, and diff checks pass. The GitHub workflow runs the
+same checks, with its completed run linked in the delivery report. Local
+Clippy/tests use Linux Rust under WSL because the native Windows MSVC linker is
+not installed. The next concrete Phos engine step is pinned WPT CSS coverage
+for the implemented inline/positioning subset, then fragment containing blocks
+and positioned descendant promotion through non-stacking ancestors.
 
 ## Repository map
 
@@ -216,9 +238,11 @@ The next Phos milestone adds bounded CSS declaration scanning, explicit author c
 | `src/dom.rs` | Document arena and relationships |
 | `src/network.rs`, `src/url.rs` | HTTP(S) loading and URL resolution |
 | `src/css.rs`, `src/style.rs` | CSS parsing and computed styles |
-| `src/layout.rs`, `src/paint.rs`, `src/text.rs` | Layout scene, font metrics, and SVG output |
+| `src/layout.rs`, `src/paragraph.rs`, `src/text.rs` | Resolved text, Unicode/bidi, line/box geometry, shaping and fallback |
+| `src/position.rs`, `src/stacking.rs`, `src/paint.rs` | Positioned rectangles, local paint groups, glyph-outline SVG |
 | `src/resource.rs` | PNG/JPEG validation and limits |
-| `tests/render`, `tests/render_fixtures.rs` | Pinned static-page rendering fixtures |
+| `tests/render`, `tests/render_fixtures.rs`, `tests/text_layout.rs`, `tests/text_boundaries.rs`, `tests/line_details.rs`, `tests/positioning.rs` | Original rendering sources and exact/bounded geometry checks |
+| `assets/fonts` | Pinned redistributable DejaVu/CJK faces, licenses and subset reproduction |
 | `src/main.rs` | `scarlite` CLI |
 | `examples/welcome.html` | Small sample document |
 | `assets/logo.webp` | Scarlite logo |

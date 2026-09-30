@@ -255,8 +255,9 @@ fn malformed_css_keeps_later_rule_and_svg_is_well_formed() {
     assert_eq!(xml.root_element().tag_name().name(), "svg");
     assert!(
         xml.descendants()
-            .any(|node| node.has_tag_name("text") && node.text() == Some("Later"))
+            .any(|node| node.has_tag_name("title") && node.text() == Some("Later"))
     );
+    assert!(xml.descendants().any(|node| node.has_tag_name("use")));
 }
 
 #[test]
@@ -275,8 +276,18 @@ fn rounded_overflow_clips_descendants_inside_padding_edge() {
     assert!(
         group
             .descendants()
-            .any(|node| node.has_tag_name("text") && node.text() == Some("Visible"))
+            .any(|node| node.has_tag_name("title") && node.text() == Some("Visible"))
     );
+    assert!(group.descendants().any(|node| {
+        node.has_tag_name("g")
+            && node.attribute("data-phos-text") == Some("true")
+            && node
+                .attribute("data-advance")
+                .unwrap()
+                .parse::<f32>()
+                .unwrap()
+                > 0.0
+    }));
     assert!(svg.contains("fill-opacity=\"0.502\""));
 }
 

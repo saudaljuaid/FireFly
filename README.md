@@ -13,11 +13,15 @@ cargo run --locked --bin scarlite -- https://example.com --output example.svg
 
 ## Features
 
-Phos parses HTML, applies inline and linked CSS, lays out text and boxes, and paints SVG.
+Phos parses HTML, applies inline and linked CSS, and paints static SVG pages.
+Its bounded text engine supports Unicode wrapping, bundled font fallback,
+Arabic/Hebrew bidi and shaping, inline fragments, and relative/absolute positioning.
 
 ## Documentation
 
-See [engine status and test results](docs/ENGINE_STATUS.md) for implementation details and upstream fixture counts. The [upstream fixture notes](tests/upstream/README.md) record their sources and licenses.
+See the [rendering subset and examples](docs/RENDERING.md) and
+[engine status](docs/ENGINE_STATUS.md) for supported behavior and fixture counts.
+The [upstream fixture notes](tests/upstream/README.md) record parser sources and licenses.
 
 ## License
 
