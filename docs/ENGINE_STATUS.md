@@ -206,7 +206,7 @@ The tokenizer error inventory compares the original html5lib error lists with `T
 
 Phos reports exact tokenizer errors for the representable pinned html5lib cases. Tree diagnostics now cover recovery across insertion modes, foreign content, templates, adoption agency, reprocessing, EOF, and fragments, but the WPT inventory above still contains exact-list and position mismatches and historical expectations that cannot be compared one-to-one. The byte frontend supports a single in-tree late-meta restart with original bytes; it does not implement statistical or locale-sensitive fallback detection, and its documented fallback is UTF-8. The fragment API receives one context element, so it cannot infer a `form` ancestor. The `&str` tokenizer cannot represent unpaired UTF-16 surrogates. Phos does not execute scripts or provide live DOM behavior such as form association and dynamic `selectedcontent` updates. Full HTML conformance has not been established. The next parser step is to reconcile the remaining representable WPT error-list mismatches by individual recovery branch and source position.
 
-Rendering supports common elements, CSS declarations and selectors, block flow, text wrapping, and SVG output. Unsupported CSS rules and properties are ignored. SVG text width is estimated; precise font shaping, image rendering, and an interactive viewport remain future work.
+The next Phos milestone adds bounded CSS declaration scanning, explicit author cascade order and importance, a block/inline/inline-block box model, deterministic bundled-font metrics, rounded backgrounds and borders, clipping, and bounded PNG/JPEG image loading. The [rendering matrix, fixture inventory, examples, and remaining gaps](RENDERING.md) describe the deliberate subset. Precise international text shaping and an interactive viewport remain future work.
 
 ## Repository map
 
@@ -216,7 +216,9 @@ Rendering supports common elements, CSS declarations and selectors, block flow, 
 | `src/dom.rs` | Document arena and relationships |
 | `src/network.rs`, `src/url.rs` | HTTP(S) loading and URL resolution |
 | `src/css.rs`, `src/style.rs` | CSS parsing and computed styles |
-| `src/layout.rs`, `src/paint.rs` | Layout scene and SVG output |
+| `src/layout.rs`, `src/paint.rs`, `src/text.rs` | Layout scene, font metrics, and SVG output |
+| `src/resource.rs` | PNG/JPEG validation and limits |
+| `tests/render`, `tests/render_fixtures.rs` | Pinned static-page rendering fixtures |
 | `src/main.rs` | `scarlite` CLI |
 | `examples/welcome.html` | Small sample document |
 | `assets/logo.webp` | Scarlite logo |

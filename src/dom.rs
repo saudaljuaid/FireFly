@@ -78,6 +78,18 @@ impl Default for Document {
 }
 
 impl Document {
+    /// Node IDs follow allocation order, which may differ from tree order
+    /// after HTML foster parenting and formatting-element reconstruction.
+    pub fn preorder(&self) -> Vec<NodeId> {
+        let mut order = Vec::with_capacity(self.nodes.len());
+        let mut pending = vec![0];
+        while let Some(id) = pending.pop() {
+            order.push(id);
+            pending.extend(self.nodes[id].children.iter().rev().copied());
+        }
+        order
+    }
+
     pub(crate) fn sync_selectedcontent(&mut self) {
         let selects: Vec<_> = (1..self.nodes.len())
             .filter(|&id| {
@@ -263,7 +275,8 @@ impl Document {
 
     pub fn stylesheets(&self) -> String {
         let mut css = String::new();
-        for (id, node) in self.nodes.iter().enumerate() {
+        for id in self.preorder() {
+            let node = &self.nodes[id];
             if let NodeKind::Element(element) = &node.kind {
                 if element.tag != "style" {
                     continue;

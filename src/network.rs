@@ -123,7 +123,7 @@ impl Client {
         )))
     }
 
-    fn fetch_once(&self, url: &Url) -> Result<Response, Error> {
+    fn fetch_once(&self, url: &Url, max_body: usize) -> Result<Response, Error> {
         let mut connection = self.connect(url)?;
         write!(
             connection,
@@ -132,17 +132,22 @@ impl Client {
             url.authority()
         )?;
         connection.flush()?;
-        read_response(connection, url.clone())
+        read_response_limited(connection, url.clone(), max_body)
     }
 
     pub fn fetch(&self, url: &Url) -> Result<Response, Error> {
+        self.fetch_limited(url, MAX_BODY)
+    }
+
+    pub fn fetch_limited(&self, url: &Url, max_body: usize) -> Result<Response, Error> {
+        let max_body = max_body.min(MAX_BODY);
         let mut current = url.clone();
         let mut visited = HashSet::new();
         for _ in 0..=MAX_REDIRECTS {
             if !visited.insert(current.clone()) {
                 return Err(Error::Network("redirect loop detected".into()));
             }
-            let response = self.fetch_once(&current)?;
+            let response = self.fetch_once(&current, max_body)?;
             if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
                 let location = response
                     .header("location")
@@ -248,7 +253,7 @@ fn read_line<R: Read>(reader: &mut BufReader<R>) -> Result<String, Error> {
     Err(Error::Network("HTTP line exceeds 8 KiB".into()))
 }
 
-fn read_chunked<R: Read>(reader: &mut BufReader<R>) -> Result<Vec<u8>, Error> {
+fn read_chunked<R: Read>(reader: &mut BufReader<R>, max_body: usize) -> Result<Vec<u8>, Error> {
     let mut body = Vec::new();
     loop {
         let line = read_line(reader)?;
@@ -268,8 +273,8 @@ fn read_chunked<R: Read>(reader: &mut BufReader<R>) -> Result<Vec<u8>, Error> {
                 }
             }
         }
-        if size > MAX_BODY - body.len() {
-            return Err(Error::Network("HTTP body exceeds 16 MiB".into()));
+        if size > max_body - body.len() {
+            return Err(Error::Network("HTTP body exceeds resource limit".into()));
         }
         let offset = body.len();
         body.resize(offset + size, 0);
@@ -282,7 +287,16 @@ fn read_chunked<R: Read>(reader: &mut BufReader<R>) -> Result<Vec<u8>, Error> {
     }
 }
 
+#[cfg(test)]
 fn read_response<R: Read>(source: R, final_url: Url) -> Result<Response, Error> {
+    read_response_limited(source, final_url, MAX_BODY)
+}
+
+fn read_response_limited<R: Read>(
+    source: R,
+    final_url: Url,
+    max_body: usize,
+) -> Result<Response, Error> {
     let mut reader = BufReader::new(source);
     let mut interim_responses = 0;
     let (status, headers) = loop {
@@ -325,22 +339,22 @@ fn read_response<R: Read>(source: R, final_url: Url) -> Result<Response, Error> 
         if !transfer.eq_ignore_ascii_case("chunked") {
             return Err(Error::Network("unsupported Transfer-Encoding".into()));
         }
-        read_chunked(&mut reader)?
+        read_chunked(&mut reader, max_body)?
     } else if let Some(length) = lengths.first() {
         let length: usize = length
             .parse()
             .map_err(|_| Error::Network("invalid Content-Length".into()))?;
-        if length > MAX_BODY {
-            return Err(Error::Network("HTTP body exceeds 16 MiB".into()));
+        if length > max_body {
+            return Err(Error::Network("HTTP body exceeds resource limit".into()));
         }
         let mut body = vec![0; length];
         reader.read_exact(&mut body)?;
         body
     } else {
         let mut body = Vec::new();
-        reader.take(MAX_BODY as u64 + 1).read_to_end(&mut body)?;
-        if body.len() > MAX_BODY {
-            return Err(Error::Network("HTTP body exceeds 16 MiB".into()));
+        reader.take(max_body as u64 + 1).read_to_end(&mut body)?;
+        if body.len() > max_body {
+            return Err(Error::Network("HTTP body exceeds resource limit".into()));
         }
         body
     };
@@ -367,6 +381,18 @@ mod tests {
     fn rejects_conflicting_body_framing() {
         let bytes = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n";
         assert!(read_response(&bytes[..], Url::parse("http://localhost/").unwrap()).is_err());
+    }
+
+    #[test]
+    fn resource_limit_rejects_large_content_length_before_body_read() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 5000000\r\n\r\n";
+        let error = read_response_limited(
+            &response[..],
+            Url::parse("http://localhost/").unwrap(),
+            4 * 1024 * 1024,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("resource limit"));
     }
 
     #[test]

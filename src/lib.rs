@@ -4,12 +4,17 @@ pub mod html;
 pub mod layout;
 pub mod network;
 pub mod paint;
+pub mod resource;
 pub mod style;
+pub mod text;
 pub mod url;
 
 use std::fmt;
+use std::fs;
+use std::path::Path;
 
 use dom::{Document, NodeKind};
+use layout::ImageSource;
 use network::Client;
 use url::Url;
 
@@ -45,7 +50,12 @@ pub fn render(source: &str, viewport_width: f32) -> Result<String, Error> {
     validate_width(viewport_width)?;
     let document = html::parse(source)?;
     let sheet = css::parse(&document.stylesheets());
-    Ok(render_document(&document, &sheet, viewport_width))
+    Ok(render_document(
+        &document,
+        &sheet,
+        &vec![None; document.nodes.len()],
+        viewport_width,
+    ))
 }
 
 /// Render an HTML byte stream. `transport_content_type` is the final HTTP
@@ -58,7 +68,12 @@ pub fn render_bytes(
     validate_width(viewport_width)?;
     let document = html::parse_bytes(source, transport_content_type)?;
     let sheet = css::parse(&document.stylesheets());
-    Ok(render_document(&document, &sheet, viewport_width))
+    Ok(render_document(
+        &document,
+        &sheet,
+        &vec![None; document.nodes.len()],
+        viewport_width,
+    ))
 }
 
 fn validate_width(viewport_width: f32) -> Result<(), Error> {
@@ -70,10 +85,142 @@ fn validate_width(viewport_width: f32) -> Result<(), Error> {
     Ok(())
 }
 
-fn render_document(document: &Document, sheet: &css::Stylesheet, viewport_width: f32) -> String {
+fn render_document(
+    document: &Document,
+    sheet: &css::Stylesheet,
+    images: &[Option<ImageSource>],
+    viewport_width: f32,
+) -> String {
     let styles = style::compute(document, sheet);
-    let scene = layout::layout(document, &styles, viewport_width);
+    let scene = layout::layout_with_images(document, &styles, images, viewport_width);
     paint::to_svg(&scene)
+}
+
+fn load_images(
+    document: &Document,
+    mut load: impl FnMut(&str) -> Result<ImageSource, Error>,
+    warnings: &mut Vec<String>,
+) -> Vec<Option<ImageSource>> {
+    let mut images = vec![None; document.nodes.len()];
+    let mut requests = 0;
+    for id in document.preorder() {
+        let node = &document.nodes[id];
+        if in_template_content(document, id) {
+            continue;
+        }
+        let NodeKind::Element(element) = &node.kind else {
+            continue;
+        };
+        if element.tag != "img" {
+            continue;
+        }
+        let Some(src) = element.attribute("src").filter(|src| !src.is_empty()) else {
+            continue;
+        };
+        if requests >= 16 {
+            warnings.push("image limit reached; later images were skipped".into());
+            break;
+        }
+        requests += 1;
+        match load(src) {
+            Ok(image) => images[id] = Some(image),
+            Err(error) => warnings.push(format!("image {src}: {error}")),
+        }
+    }
+    images
+}
+
+/// Render a local HTML file, resolving image paths against its directory.
+pub fn render_file(path: &Path, viewport_width: f32) -> Result<(String, Vec<String>), Error> {
+    validate_width(viewport_width)?;
+    if fs::metadata(path)?.len() > 16 * 1024 * 1024 {
+        return Err(Error::InvalidInput("HTML input exceeds 16 MiB".into()));
+    }
+    let document = html::parse_bytes(&fs::read(path)?, None)?;
+    let client = Client::new();
+    let mut warnings = Vec::new();
+    let mut css_source = String::new();
+    let mut links = 0;
+    for id in document.preorder() {
+        let node = &document.nodes[id];
+        if in_template_content(&document, id) {
+            continue;
+        }
+        let NodeKind::Element(element) = &node.kind else {
+            continue;
+        };
+        if element.tag == "style" {
+            for &child in &node.children {
+                if let NodeKind::Text(text) = &document.nodes[child].kind
+                    && css_source.len() + text.len() <= 4 * 1024 * 1024
+                {
+                    css_source.push_str(text);
+                    css_source.push('\n');
+                }
+            }
+        } else if element.tag == "link"
+            && element.attribute("rel").is_some_and(|rel| {
+                rel.split_ascii_whitespace()
+                    .any(|token| token.eq_ignore_ascii_case("stylesheet"))
+            })
+        {
+            if links >= 16 {
+                warnings.push("stylesheet limit reached; later links were skipped".into());
+                break;
+            }
+            links += 1;
+            let Some(href) = element.attribute("href") else {
+                continue;
+            };
+            let loaded = if href.starts_with("http://") || href.starts_with("https://") {
+                Url::parse(href)
+                    .and_then(|url| client.fetch_limited(&url, 2 * 1024 * 1024))
+                    .and_then(|response| response.text())
+            } else {
+                let target = path.parent().unwrap_or_else(|| Path::new(".")).join(href);
+                fs::metadata(&target)
+                    .map_err(Error::from)
+                    .and_then(|metadata| {
+                        if metadata.len() > 2 * 1024 * 1024 {
+                            return Err(Error::InvalidInput("stylesheet exceeds 2 MiB".into()));
+                        }
+                        fs::read_to_string(target).map_err(Error::from)
+                    })
+            };
+            match loaded {
+                Ok(source) if css_source.len() + source.len() <= 4 * 1024 * 1024 => {
+                    css_source.push_str(&source);
+                    css_source.push('\n');
+                }
+                Ok(_) => warnings.push("combined stylesheet limit reached".into()),
+                Err(error) => warnings.push(format!("stylesheet {href}: {error}")),
+            }
+        }
+    }
+    let sheet = css::parse(&css_source);
+    let images = load_images(
+        &document,
+        |src| {
+            if src.starts_with("http://") || src.starts_with("https://") {
+                let response =
+                    client.fetch_limited(&Url::parse(src)?, resource::MAX_IMAGE_BYTES)?;
+                resource::decode_image(&response.body, response.header("content-type"))
+            } else {
+                let target = path.parent().unwrap_or_else(|| Path::new(".")).join(src);
+                if fs::metadata(&target)?.len() > resource::MAX_IMAGE_BYTES as u64 {
+                    return Err(Error::InvalidInput(
+                        "image exceeds 4 MiB compressed-byte limit".into(),
+                    ));
+                }
+                resource::decode_image(&fs::read(target)?, None)
+            }
+        },
+        &mut warnings,
+    );
+    Ok((
+        render_document(&document, &sheet, &images, viewport_width),
+        warnings,
+    ))
 }
 
 fn in_template_content(document: &Document, mut id: usize) -> bool {
@@ -109,10 +256,9 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
     }
     let document = html::parse_bytes(&response.body, response.header("content-type"))?;
     let base_url = document
-        .nodes
-        .iter()
-        .enumerate()
-        .filter_map(|(id, node)| match &node.kind {
+        .preorder()
+        .into_iter()
+        .filter_map(|id| match &document.nodes[id].kind {
             NodeKind::Element(element)
                 if element.tag == "base" && !in_template_content(&document, id) =>
             {
@@ -126,7 +272,8 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
     let mut warnings = Vec::new();
     let mut stylesheets = 0;
     let mut stylesheet_requests = 0;
-    for (id, node) in document.nodes.iter().enumerate() {
+    for id in document.preorder() {
+        let node = &document.nodes[id];
         if in_template_content(&document, id) {
             continue;
         }
@@ -163,7 +310,7 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
                 stylesheet_requests += 1;
                 let load = base_url
                     .join(href)
-                    .and_then(|url| client.fetch(&url))
+                    .and_then(|url| client.fetch_limited(&url, 2 * 1024 * 1024))
                     .and_then(|sheet| {
                         if sheet.body.len() > 2 * 1024 * 1024 {
                             return Err(Error::Network("stylesheet exceeds 2 MiB".into()));
@@ -195,9 +342,18 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
         }
     }
     let sheet = css::parse(&css_source);
+    let images = load_images(
+        &document,
+        |src| {
+            let url = base_url.join(src)?;
+            let response = client.fetch_limited(&url, resource::MAX_IMAGE_BYTES)?;
+            resource::decode_image(&response.body, response.header("content-type"))
+        },
+        &mut warnings,
+    );
     Ok(LoadedPage {
         url: response.final_url,
-        svg: render_document(&document, &sheet, viewport_width),
+        svg: render_document(&document, &sheet, &images, viewport_width),
         warnings,
         stylesheets,
     })

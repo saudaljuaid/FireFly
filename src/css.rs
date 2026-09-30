@@ -4,6 +4,7 @@ use crate::dom::{Document, Element, NodeId};
 pub struct Declaration {
     pub name: String,
     pub value: String,
+    pub important: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,36 +75,130 @@ pub struct Stylesheet {
     pub rules: Vec<Rule>,
 }
 
+// A small CSS scanner, intentionally bounded rather than a general CSS tokenizer.
+// Comments become whitespace so `red/*x*/blue` cannot turn into `redblue`.
 fn strip_comments(source: &str) -> String {
     let mut output = String::with_capacity(source.len());
-    let mut remaining = source;
-    while let Some(start) = remaining.find("/*") {
-        output.push_str(&remaining[..start]);
-        remaining = &remaining[start + 2..];
-        if let Some(end) = remaining.find("*/") {
-            remaining = &remaining[end + 2..];
+    let mut chars = source.chars().peekable();
+    let mut quote = None;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if escaped {
+            output.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            output.push(ch);
+            escaped = true;
+        } else if Some(ch) == quote || (quote.is_some() && ch == '\n') {
+            output.push(ch);
+            quote = None;
+        } else if quote.is_none() && matches!(ch, '\'' | '"') {
+            output.push(ch);
+            quote = Some(ch);
+        } else if quote.is_none() && ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            output.push(' ');
+            let mut previous = '\0';
+            for next in chars.by_ref() {
+                if previous == '*' && next == '/' {
+                    break;
+                }
+                previous = next;
+            }
         } else {
-            return output;
+            output.push(ch);
         }
     }
-    output.push_str(remaining);
     output
 }
 
+fn parse_declaration(part: &str) -> Option<Declaration> {
+    let (name, value) = part.split_once(':')?;
+    let name = name.trim().to_ascii_lowercase();
+    if name.is_empty()
+        || name.len() > 128
+        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return None;
+    }
+    let mut value = value.trim();
+    if value.is_empty() || value.len() > 65_536 {
+        return None;
+    }
+    // Only a trailing top-level !important flag affects the cascade.
+    let mut important = false;
+    let lower = value.to_ascii_lowercase();
+    if let Some(prefix) = lower.strip_suffix("important") {
+        let trimmed = prefix.trim_end();
+        if let Some(before) = trimmed.strip_suffix('!') {
+            value = value[..before.len()].trim_end();
+            important = true;
+        }
+    }
+    if value.is_empty() {
+        return None;
+    }
+    Some(Declaration {
+        name,
+        value: value.to_string(),
+        important,
+    })
+}
+
 pub fn parse_declarations(source: &str) -> Vec<Declaration> {
-    source
-        .split(';')
-        .filter_map(|part| {
-            let (name, value) = part.split_once(':')?;
-            let name = name.trim().to_ascii_lowercase();
-            let value = value.trim().to_ascii_lowercase();
-            if name.is_empty() || value.is_empty() {
-                None
-            } else {
-                Some(Declaration { name, value })
+    let clean = strip_comments(source);
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    let mut invalid = false;
+    for (index, ch) in clean.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if Some(ch) == quote {
+            quote = None;
+            continue;
+        }
+        if quote.is_some() && ch == '\n' {
+            quote = None;
+            invalid = true;
+            continue;
+        }
+        if quote.is_some() {
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => depth = depth.saturating_add(1).min(64),
+            ')' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => {
+                if !invalid && let Some(decl) = parse_declaration(&clean[start..index]) {
+                    result.push(decl);
+                    if result.len() == 8192 {
+                        return result;
+                    }
+                }
+                start = index + 1;
+                invalid = false;
             }
-        })
-        .collect()
+            _ => {}
+        }
+    }
+    if !invalid
+        && quote.is_none()
+        && depth == 0
+        && let Some(decl) = parse_declaration(&clean[start..])
+    {
+        result.push(decl);
+    }
+    result
 }
 
 fn parse_compound(source: &str) -> Option<(CompoundSelector, (usize, usize, usize))> {
@@ -217,6 +312,7 @@ fn matching_brace(source: &str, open: usize) -> Option<usize> {
     let mut depth = 1;
     let mut quote = None;
     let mut escaped = false;
+    let mut candidate = None;
     for (offset, character) in source[open + 1..].char_indices() {
         if escaped {
             escaped = false;
@@ -228,6 +324,18 @@ fn matching_brace(source: &str, open: usize) -> Option<usize> {
         }
         if Some(character) == quote {
             quote = None;
+            candidate = None;
+            continue;
+        }
+        if quote.is_some() {
+            if character == '}' && depth == 1 && candidate.is_none() {
+                candidate = Some(open + 1 + offset);
+            } else if character == '\n' {
+                quote = None;
+                if candidate.is_some() {
+                    return candidate;
+                }
+            }
             continue;
         }
         if quote.is_none() && matches!(character, '\'' | '"') {
@@ -247,7 +355,7 @@ fn matching_brace(source: &str, open: usize) -> Option<usize> {
             }
         }
     }
-    None
+    candidate
 }
 
 #[cfg(test)]
@@ -283,5 +391,31 @@ mod tests {
         );
         assert_eq!(sheet.rules.len(), 1);
         assert_eq!(sheet.rules[0].declarations[0].value, "green");
+    }
+
+    #[test]
+    fn declaration_scanner_keeps_values_and_recovers_after_bad_parts() {
+        let declarations = parse_declarations(
+            r#"bad; color: RED; data: url("A;B(C)"); broken: ; background-color: #AbCdEf ! IMPORTANT; width: 2px"#,
+        );
+        assert_eq!(declarations.len(), 4);
+        assert_eq!(declarations[0].value, "RED");
+        assert_eq!(declarations[1].value, "url(\"A;B(C)\")");
+        assert_eq!(declarations[2].value, "#AbCdEf");
+        assert!(declarations[2].important);
+        assert_eq!(declarations[3].name, "width");
+        let sheet =
+            parse(r#"p { color: red; content: "/* literal */;}"; } /* x */ p { color: blue }"#);
+        assert_eq!(sheet.rules.len(), 2);
+        assert_eq!(sheet.rules[1].declarations[0].value, "blue");
+        let escaped = parse_declarations(r"content: A\;B; color: green");
+        assert_eq!(escaped.len(), 2);
+        assert_eq!(escaped[0].value, r"A\;B");
+        let recovered = parse("p{color:'broken; } div{color:blue}");
+        assert_eq!(recovered.rules.len(), 1);
+        assert_eq!(
+            recovered.rules[0].selectors[0].parts[0].tag.as_deref(),
+            Some("div")
+        );
     }
 }
