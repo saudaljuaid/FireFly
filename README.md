@@ -1,8 +1,8 @@
-# Scarlite
+# Inkbird
 
-<img src="assets/logo.webp" alt="Scarlite red emblem" width="220">
+<img src="assets/inkbird.jpg" alt="Inkbird purple emblem" width="220">
 
-Inkbird is a browser project built around **Phos**, a Rust HTML and CSS rendering engine. Phos loads local and HTTP(S) pages and renders them to SVG. The native window lives in [Inkbird](https://github.com/saudaljuaid/inkbird); Phos remains headless.
+Inkbird is a browser project built around **Phos**, a Rust HTML and CSS rendering engine. Phos loads local and HTTP(S) pages and renders them to SVG. The native window lives in [Inkbird UI](https://github.com/saudaljuaid/Scarlite-UI); Phos remains headless.
 
 ## Try it
 
