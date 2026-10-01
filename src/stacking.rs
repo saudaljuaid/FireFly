@@ -53,9 +53,15 @@ impl Order<'_> {
         }
     }
 
-    fn phase(&self, index: usize) -> (u8, i32, usize) {
-        let style = &self.styles[self.groups[index].node];
-        let (phase, z) = if style.position == Position::Static {
+    fn phase(&self, index: usize) -> (u8, i32, i32, usize) {
+        let node = self.groups[index].node;
+        let style = &self.styles[node];
+        let item = style.position != Position::Absolute
+            && self.document.nodes[node].parent.is_some_and(|parent| {
+                self.styles[parent].display.is_flex() || self.styles[parent].display.is_grid()
+            });
+        let (phase, z) = if style.position == Position::Static && !(item && style.z_index.is_some())
+        {
             (1, 0)
         } else {
             match style.z_index.unwrap_or(0) {
@@ -64,7 +70,12 @@ impl Order<'_> {
                 z => (3, z),
             }
         };
-        (phase, z, self.tree_order[self.groups[index].node])
+        (
+            phase,
+            z,
+            if item { style.order } else { 0 },
+            self.tree_order[node],
+        )
     }
 
     fn group(&mut self, index: usize, depth: usize) {

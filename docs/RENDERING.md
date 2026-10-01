@@ -1,14 +1,19 @@
-# Phos static text and positioned layout
+# Phos static responsive layout
 
-The fresh fetched `main` was `3bf53f358a61c9557f467d65a7d35232e217ef6f`, the
-previous static CSS/SVG milestone. Its baseline passed **89 tests, zero failed,
-three intentionally ignored** diagnostics; formatting and Clippy passed before
-changes. The pinned upstream parser sources and expected outputs are unchanged.
-This document describes a bounded subset, not HTML, CSS, Unicode, font, or
-browser conformance.
-Two logo-only main updates arrived during work and were incorporated before
-delivery; the delivery parent is `5f73036101b7827ca8a821580454a1a66cbb79db`.
-They changed `assets/logo.webp` and no engine or parser source.
+Phos is the bounded backend for the later Scarlite UI. This milestone adds a
+shared intrinsic-sizing foundation, horizontal Flexbox and Grid, width-based
+responsive CSS, viewport lengths and calculations, linear gradients and outer
+shadows. It does not add an application, browser window, live DOM or runtime.
+This is a substantial supported subset, not HTML/CSS/browser conformance.
+
+Fresh inventory fetched `main` at
+`a89508a053c5e4260ac2ee60927690718249cf58`; there were no intervening commits.
+Baseline local checks and the completed GitHub job passed **167 tests, zero
+failed, three intentionally ignored** diagnostics. Parser corpora, network/URL
+implementation, resources, dependencies, bundled fonts and Scarlite-UI remain
+unchanged. Detailed contracts are [Flexbox](FLEXBOX.md), [Grid](GRID.md),
+[responsive CSS](RESPONSIVE_CSS.md), [effects](EFFECTS.md) and
+[browser/performance evidence](BROWSER_COMPARISON.md).
 
 ## Specifications used
 
@@ -40,14 +45,14 @@ Unsupported declarations, values, selectors, and at-rules are ignored.
 
 | Area/property | Supported subset | Deliberate limits |
 | --- | --- | --- |
-| Selectors | Tag, class, ID, compound, descendant | No pseudo selectors, other combinators, media queries |
+| Selectors | Tag, class, ID, compound, descendant | No pseudo selectors or other combinators |
 | Cascade | UA defaults; linked/inline sheets in document order; style attributes; specificity, source order, inheritance, `!important` | No user sheets, layers, custom properties, `@import`, animations |
 | Declaration syntax | Comments, escapes, quotes, nested functions/parentheses, semicolons in values, trailing `!important` | Bounded scanner, not general CSS Syntax; unterminated values recover at the enclosing rule |
-| `display` | `block`, `inline`, `inline-block`, `none` | No flex, grid, table formatting, floats |
-| Size | `width`, `height`, `min-width/height`, `max-width/height`, `box-sizing:content-box/border-box` | Approximate preferred width for non-replaced atomic/absolute boxes |
+| `display` | `block`, `inline`, `inline-block`, `flex`, `inline-flex`, `grid`, `inline-grid`, `none` | No table formatting or floats |
+| Size | `width`, `height`, `min-width/height`, `max-width/height`, `box-sizing:content-box/border-box`; horizontal `min-content`/`max-content` | Intrinsic height keywords fall back to automatic/natural behavior; no fit-content() |
 | Edges | One-to-four-value `margin`, `padding`, `border-width`; individual margin/padding/width sides; auto margins | No margin collapsing; side-specific border style/color absent |
 | Borders | `border` width/style/color; `border-style:none/solid/dashed/dotted`; `border-color`, `border-radius` | Circular radii; asymmetric borders paint side rectangles; wrapped inline borders use sliced ends |
-| Color | Hex RGB/RGBA, `rgb()`, `rgba()`, common names, transparent; alpha text/background/border | No full named-color table, Color 4 spaces, gradients, background images |
+| Color | Hex RGB/RGBA, `rgb()`, `rgba()`, common names, transparent; alpha text/background/border | No full named-color table, Color 4 spaces or external CSS background images |
 | Font | `font-size` resolving to 1…1,024 px; `font-weight:normal/400` or `bold/700/800/900`; `line-height:normal`, unitless 0.1…10, or length/percent resolving to 1…1,000,000 px | Fixed bundled family policy; other weights, italic, font shorthand, family matching, letter/word spacing deferred |
 | White space | `normal`, `nowrap`, `pre`, `pre-wrap`, `pre-line`; `<br>` | Horizontal text; no `break-spaces` or tab-size control |
 | Breaking | `overflow-wrap:normal/break-word/anywhere` | Default is deliberately `break-word`; no `word-break`, hyphenation, language tailoring |
@@ -57,8 +62,14 @@ Unsupported declarations, values, selectors, and at-rules are ignored.
 | Position | `static`, `relative`, `absolute`; `top/right/bottom/left`; one-to-four-value `inset`; `z-index:auto` or integer −32,768…32,767 | Fixed/sticky/logical insets/transforms deferred; local ancestor paint barriers |
 | Clipping | `overflow:visible/hidden`; rounded padding-edge descendant clips | No scrolling or separate overflow axes |
 | Images | PNG/JPEG `<img>`; intrinsic, HTML/CSS sizes, ratio preservation, alt fallback | No GIF/WebP/SVG decoding, srcset, CSS background images |
+| Flexbox | Actual base/hypothetical sizing, scaled shrink/grow with min/max freezing, lines, gaps, reverse/RTL, auto margins, cross stretching and first baselines | See exact property matrix and intrinsic simplifications in [FLEXBOX.md](FLEXBOX.md) |
+| Grid | Explicit/sparse automatic placement, implicit tracks, fixed/percentage/intrinsic/fr/minmax/integer-repeat sizing, spans and alignment | No auto-fit/fill, dense, named areas, subgrid or complete cyclic dependency reruns; see [GRID.md](GRID.md) |
+| Responsive | Bounded width features/ranges, and/comma alternatives, nested media, style/link media attributes | Static viewport environment; no container queries or other media features |
+| Values | px/em/rem/%/vw; vh/vmin/vmax with explicit height; typed bounded calc arithmetic | Unresolved percentages remain unresolved; see [RESPONSIVE_CSS.md](RESPONSIVE_CSS.md) |
+| Effects | One linear gradient, up to four outer shadows; circular rounded paths, real SVG Gaussian blur and knockout masks | No inset/repeating/radial effects; bounded interpolation and surface policies in [EFFECTS.md](EFFECTS.md) |
 
-Lengths accept `px`, `em`, `rem`, `%`, and unitless zero. `em` uses the
+Lengths accept `px`, `em`, `rem`, `%`, `vw`, and unitless zero, plus bounded
+`calc()`. Height-based viewport units require the explicit viewport height. `em` uses the
 computed element size; font-size `em/%` uses its parent, and `rem` uses the
 root. Cascaded font size resolves before font-relative properties, so `1em`
 padding and percentage line height do not depend on declaration order.
@@ -68,6 +79,80 @@ Normal-flow horizontal percentages use the containing content width;
 margin and padding percentages on all sides use that width. Normal-flow height
 percentages require a definite containing height and otherwise remain auto.
 Mixed block/inline descendants keep DOM order through anonymous block wrappers.
+
+## Shared sizing and formatting contexts
+
+`src/sizing.rs` separates definite available space, indefinite space,
+min-content/max-content queries, content dimensions and outer contributions.
+`AxisSpace` additionally separates a constrained used height from a definite
+percentage basis: an auto-height Flexbox with `min-height:100px` can distribute
+space across 100px while a `50%` basis still falls back to content. Explicit
+height provides a percentage basis. Grid's final areas provide a basis for
+an item's percentage height; stretched and resolved preferred heights provide
+the descendant basis, while unstretched natural heights retain unresolved
+descendant percentages. Unresolved percentage tracks/gaps follow its
+documented intrinsic policy.
+
+`IntrinsicCache` lives for one immutable document/computed-style/image pass.
+It measures normalized logical paragraphs, Unicode opportunities, selected
+faces and shaped advances through the established paragraph/text pipeline.
+Min-content uses unbreakable groups; NBSP survives. `anywhere` uses shaped
+cluster-derived grapheme opportunities; `break-word` emergency breaks are not
+intrinsic opportunities. Max-content omits soft wrapping but respects forced
+lines. Tabs use the same space advance. Inline decorations and atomic content
+contribute; block children take maxima. Images include intrinsic ratio,
+HTML hints, constrained preferred-axis transfer and the both-auto min/max
+ratio table from [CSS 2.2 §10.3.2](https://www.w3.org/TR/CSS22/visudet.html#inline-replaced-width)
+and [§10.4](https://www.w3.org/TR/CSS22/visudet.html#min-max-widths).
+Opposing constraints can override the ratio. Valid authored `auto`
+suppresses the corresponding HTML dimension hint. Empty/failed images retain
+alt fallback. Hidden/out-of-flow/inert content does not contribute.
+
+Contributions add unresolved-free padding, borders and non-auto margins after
+preferred/min/max constraints. Numeric border-box sizes subtract insets;
+intrinsic keywords always select content dimensions. Minimum wins when min
+and max conflict. Percentages/calc expressions retain their containing-size
+dependency, including zero percentages; they are not resolved from viewport
+width during intrinsic measurement. Cyclic percentage edges are omitted in
+intrinsic contributions and resolve at final available width. Atomic and
+one-sided absolute auto widths use `min(max(min-content,available),max-content)`.
+
+Flexbox intrinsic widths conservatively combine item contributions and definite
+bases; its ideal intrinsic flex-fraction algorithm is deferred. Grid uses the
+same placement, intrinsic track and automatic-minimum helpers for measurement
+and final layout. Column natural heights and Grid rows are width-dependent dry
+measurements, distinct from intrinsic width contributions. These dry passes do
+not append boxes, glyph primitives, clips, paint groups or SVG resources, or
+consume the final output budget. A size-keyed cache includes node, available
+width/height, forced content sizes and whether only children are measured.
+It is not reused across documents or style/image changes. Definite fixed sizes
+avoid unnecessary intrinsic or cross measurements. Bounded global counters and
+reservations prevent suspended ancestors doing unpaid work after descendants
+exhaust the numeric budget.
+
+Final Flex/Grid items all pass through the common box and paragraph layout.
+They retain image/alt policy, baseline construction, min/max/box sizing,
+relative offsets, padded absolute anchors, local paint groups, rounded clips
+and scene budgets. Direct adjacent text across comments forms one anonymous
+item; whitespace-only runs are omitted. `order` creates stable formatting and
+paint order, independently of physical reverse/RTL placement and logical DOM
+text. Static Flex/Grid item z-index participates in local paint phases.
+Inline-flex/inline-grid are atomic and expose their first supported baseline;
+ordinary inline-block retains its previous last-flow/bottom-when-clipped policy.
+Clipped Flex/Grid items retain a real first text baseline; empty/image items
+synthesize their border-bottom baseline.
+
+This foundation uses [CSS Sizing §2 terminology](https://www.w3.org/TR/css-sizing-3/#terms),
+[§3.2 sizing values](https://www.w3.org/TR/css-sizing-3/#sizing-values),
+[§3.3 box sizing](https://www.w3.org/TR/css-sizing-3/#box-sizing),
+[§5.1 intrinsic sizes](https://www.w3.org/TR/css-sizing-3/#intrinsic-sizes),
+[§5.2 intrinsic contributions](https://www.w3.org/TR/css-sizing-3/#intrinsic-contribution),
+[CSS Box Alignment §5 content distribution](https://www.w3.org/TR/css-align-3/#content-distribution),
+[§6 self alignment](https://www.w3.org/TR/css-align-3/#self-alignment) and
+[§8 gaps](https://www.w3.org/TR/css-align-3/#gaps).
+The linked subsystem contracts cite the exact Flexbox/Grid/Values/Media/Images
+and Backgrounds sections used; their additional specification behavior is not
+claimed by this subset.
 
 ## Resolved text, whitespace, and line geometry
 
@@ -201,24 +286,25 @@ resolves the nearest positioned block/inline-block ancestor's complete padding
 rectangle. Its final auto flow height is usable in this deliberate subset;
 general browser percentage-height behavior is more nuanced. Positioned inline
 fragments do not establish containing rectangles. Without a supported ancestor,
-the initial rectangle is x=0, y=0, viewport width, and indefinite height.
-Initial vertical percentage offsets/heights remain unresolved. The CLI has no
-viewport height or fixed-position semantics.
+the initial rectangle is x=0, y=0, viewport width and the optional explicit
+viewport height. Width-only calls leave initial vertical percentages unresolved.
+`--height` supplies that environment; fixed-position semantics remain deferred.
 
 Absolute sizes and physical inset percentages use the complete padding width or
 height before opposing insets reduce usable space. Every percentage
 margin/padding uses the containing width. Explicit sizes, min/max constraints,
 box sizing, margins/padding/borders, opposing-inset stretch, and auto margins
 between resolved opposing insets are supported. One-sided/all-auto width uses
-a bounded preferred-width shrink approximation; auto height uses content.
+shared min-content/max-content shrink-to-fit; auto height uses content.
 All-auto position uses the nearest supported ancestor's content origin, a
 deliberate approximation to CSS static position.
 
-Each principal block/inline-block is a local paint barrier. Its own
+Each principal block/atomic formatting container is a local paint barrier. Its own
 background/border and clip opening precede descendants, then negative z-index
-groups in increasing order, ordinary in-flow content in document order,
+groups in increasing order, ordinary in-flow content in formatting order,
 positioned auto/zero groups in document order, and positive z-index groups in
-increasing order. Equal values use DOM order; clip closing follows the group.
+increasing order. Equal values use stable order-modified item order where applicable, otherwise
+DOM order; clip closing follows the group. Reverse direction only changes placement.
 Positioned non-auto z-index expresses the supported stacking intent, but all
 local barriers retain descendants. Full Appendix E promotion through
 non-stacking ancestors is deferred. Inline fragments paint before line ink;
@@ -237,7 +323,7 @@ or promoting descendants beyond the local principal barriers.
 | --- | ---: |
 | HTML bytes, including decoded byte input | 16 MiB |
 | Open HTML elements / token reprocessing | 256 / 32 steps |
-| Viewport width / scene coordinates | 1–16,384 CSS px / finite ±1,000,000 |
+| Supplied viewport width/height / scene coordinates | 1–16,384 CSS px / finite ±1,000,000 |
 | CSS declarations per scan / name / value | 8,192 / 128 bytes / 65,536 bytes |
 | Linked CSS requests / individual source / accumulated styles | 16 / 2 MiB / 4 MiB including separators |
 | Image requests / compressed bytes each | 16 / 4 MiB |
@@ -254,6 +340,23 @@ or promoting descendants beyond the local principal barriers.
 | Box, primitive, run, line lists | Independently 200,000 items |
 | Glyph outline / all definitions / SVG output | 65,536 bytes / 16 MiB / 128 MiB |
 | Logical SVG title | 65,536 bytes |
+| Stylesheet rules / combined declarations | 8,192 / 65,536 |
+| Selector list / descendant parts / classes per compound | 128 / 32 / 32 |
+| Cascade visits and inspected declaration/attribute bytes | 8,000,000 globally; accepted author prefix plus inherited/UA defaults, status/truncation reported |
+| Media nesting / alternatives / predicates | 8 / 16 / 16; evaluated once per viewport |
+| calc bytes / nesting / tokens | 4,096 / 32 / 1,024; typed finite arithmetic |
+| Intrinsic scalar/edge/structural work / numeric visits | 400,000 / 8,000,000 globally |
+| Dry measurement operations / cached size entries | 600,000 / 16,384 globally |
+| Formatting items / anonymous text members | 4,096 per container / 4,096 per anonymous run |
+| Shared layout numeric visits | 8,000,000 globally, including reserved cross work before recursion |
+| Flex numeric visits / freeze iterations | 4,000,000 per plan / at most n+1 |
+| Grid tracks / span / repeat expansion | 256 per axis / 256 / 256 |
+| Grid occupancy / placement probes / numeric visits | Fixed 8 KiB / 262,144 / 4,000,000 per phase |
+| Gradient stops / outer shadows | 16 / 4 per box |
+| Effect values / shadow offset or spread / blur | 4,096 bytes / ±4,096 px / 0–256 px |
+| Effect definitions | 4,096, sharing the existing 16 MiB definition budget |
+| Shadow surface area | 16,777,216 CSS px² per shadow; 67,108,864 per SVG |
+| Premultiplied alpha interpolation | Depth 8; at most 256 leaves per adjacent authored stop interval; channel error target 1/1,024 |
 
 Only the three trusted bundled font faces are decoded; arbitrary external font
 input is unsupported. The emitted-glyph limit does not claim a separate cap on
@@ -286,138 +389,99 @@ inline fragment state at the item boundary.
 SVG root metadata exposes truncation, and `scarlite` prints a bounded-prefix
 warning when rendering or painting exhausts its budget. Successful optional
 resource loading does not bypass these scene/output limits.
-Intrinsic text widths are cached across nested atomic layout. Empty inline-edge
+Intrinsic contributions are cached across nested formatting and atomic layout. Empty inline-edge
 line state is retained directly rather than rescanning every prior edge.
 
 `Scene.height` is the maximum of normal-flow height and painted box extent,
 clamped to 1…1,000,000 px. Extent currently includes box geometry even when an
 ancestor clips it; an oversized clipped descendant can therefore add blank
-SVG page space. Clipping changes visible painting, not this extent policy.
+SVG page space. Clipping changes visible box painting, not this retained extent policy. Outer
+shadow bottom extents are added conservatively and respect active ancestor
+clip bottoms. Effects do not reserve flow space or expand viewport width.
 
 ## Fixtures and verification
 
-There are **21 HTML source files, one PNG, and one CSS** in `tests/render`.
-The twelve new sources are original Apache-2.0 fixtures. Exact provenance and
-the retained Scarlite start-page source pin are in
-[fixture notes](../tests/render/README.md); the UI repository is unchanged.
-The **71 rendering integration checks** comprise the original **16 rendering
-tests**, **17 text-layout**, **21 positioning**, **9 text-boundary**, and
-**8 line-detail tests**.
+There are **28 HTML sources, four PNGs and one CSS** in `tests/render`.
+The [fixture inventory](../tests/render/README.md) records the six restrained
+layout compositions, effects probe, existing canary and original provenance.
+No Scarlite-UI source was changed. New tiny gallery images are original PNGs,
+reproducible with `tools/generate_layout_images.py`; no screenshot or upstream
+expected output was adapted. No dependency/font policy was added or changed.
+The existing dependency and font license records remain applicable.
 
-Fixtures exercise all five whitespace modes; ASCII punctuation/hyphens/URLs;
-Latin accents/decomposed marks; CJK; NBSP/narrow NBSP; cross-element whitespace
-and combining clusters; mixed Arabic/Hebrew/Latin/numbers; regular/bold/fallback
-faces; line baselines and sliced inline fragments; images/inline-blocks; lists;
-relative/absolute offsets, containing rectangles, z-index/alpha/clipping; an
-article, navigation/cards, and expanded many-span/long-token/malformed inputs.
-Assertions cover exact metrics, source mapping, visual order, line counts,
-baselines, dimensions, scene order, unique valid SVG IDs, and bounded work,
-alongside visual review. Screenshots are review artifacts, not the sole oracle.
+Geometry and work tests cover intrinsic contributions/constraints, definite and
+indefinite percentages, Flexbox base/freeze/line/cross results, Grid placement,
+track spans/fractions, responsive computed styles and explicit transitions,
+Unicode/bidi/baselines, image ratios, padded overlays, static item z-index,
+source/paint order, clipping, unique resource IDs, finite bounds and truncation.
+Screenshots supplement those oracles. The former invalid `calc(10px)` fixture
+assertion now uses the independently invalid `calc(10px + red)` because the
+former expression is supported and separately tested. Parser expectations
+and corpus files are unchanged.
 
-The unchanged corpus checks **7,028 current and legacy tokenizer sequences**,
+The final locked suite count and group breakdown are recorded in
+[ENGINE_STATUS.md](ENGINE_STATUS.md). Baseline was 167/0/3; the three ignored
+inventory diagnostics remain `inventory_upstream_tokenizer`,
+`inventory_upstream_document_trees` and `inventory_upstream_fragments`.
+Unchanged parser checks include **7,028 current and legacy tokenizer sequences**,
 **1,739 document trees, 206 fragment trees, eight script-on trees**, and **7,028
-tokenizer error lists**. Four surrogate inputs remain unrepresentable. The
-three ignored diagnostics are `inventory_upstream_tokenizer`,
-`inventory_upstream_document_trees`, and `inventory_upstream_fragments`; the
-independent WPT diagnostic gaps remain in [engine status](ENGINE_STATUS.md).
-The final local `cargo test --locked` passes **167 tests, zero failed, three
-intentionally ignored**. The exact groups are 47 library, 10 byte-input,
-8 line-detail, 6 parse-error, 21 positioning, 16 rendering, 9 text-boundary,
-17 text-layout, 22 tree-construction, 2 upstream-error, 2 upstream-tokenizer,
-and 7 upstream-tree tests; binary/doc tests contain zero cases. All focused
-rendering/stress checks are included in this locked suite. Formatting,
-`cargo clippy --all-targets -- -D warnings`, and `git diff --check` pass.
-The [GitHub workflow](../.github/workflows/ci.yml) runs those same formatting,
-Clippy, and locked-suite commands; the delivery report links its completed run
-and records verified CI results.
+error lists**. Four surrogate inputs remain unrepresentable. The independent
+WPT diagnostic gaps remain in engine status.
 
-The local checks use Rust under WSL Ubuntu; Windows formatting also succeeds.
-Native MSVC compilation on this machine lacks `link.exe`, an environment
-limitation rather than a source test failure. CI uses its configured Linux
-environment.
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+git diff --check
+```
 
-## CLI examples, visual review, and performance
+All focused checks are included in the locked suite. Local tests/Clippy use
+Rust 1.98.1 under WSL Linux; native MSVC is unavailable because this machine
+lacks `link.exe` and Application Control blocks build helpers. No limits or
+source requirements were changed to bypass that host limitation. GitHub's
+[workflow](../.github/workflows/ci.yml) runs the same fmt, all-target Clippy and
+locked commands; completed logs must be verified before delivery.
 
-SVG/PNG review artifacts are saved outside the repository. Reproduce source
-SVGs with the normal `scarlite` command and inspect them in an SVG-capable
-browser; the delivery report links representative narrow/wide previews.
+## CLI, actual browser comparisons and performance
+
+SVGs and actual Chrome raster previews are stored outside the repository.
+[BROWSER_COMPARISON.md](BROWSER_COMPARISON.md) records font matching, narrow/
+medium/wide layouts, geometry/raster comparisons, honest remaining differences,
+HTTPS behavior, and timing measurements with investigated regressions.
 
 ```sh
 cargo run --locked --bin scarlite -- examples/welcome.html --output welcome.svg --width 900
 cargo run --locked --bin scarlite -- tests/render/start_page.html --output start-320.svg --width 320
 cargo run --locked --bin scarlite -- tests/render/start_page.html --output start-640.svg --width 640
 cargo run --locked --bin scarlite -- tests/render/start_page.html --output start-900.svg --width 900
-cargo run --locked --bin scarlite -- tests/render/article.html --output article.svg --width 320
-cargo run --locked --bin scarlite -- tests/render/bidi.html --output bidi.svg --width 320
-cargo run --locked --bin scarlite -- tests/render/unicode.html --output unicode.svg --width 640
-cargo run --locked --bin scarlite -- tests/render/position_clip.html --output clip.svg --width 900
-cargo run --locked --bin scarlite -- https://example.com --output example.svg --width 900
+cargo run --locked --bin scarlite -- tests/render/layout-navigation.html --output navigation.svg --width 320
+cargo run --locked --bin scarlite -- tests/render/layout-documentation.html --output documentation.svg --width 900
+cargo run --locked --bin scarlite -- tests/render/layout-dashboard.html --output dashboard.svg --width 900
+cargo run --locked --bin scarlite -- tests/render/effects.html --output effects.svg --width 640
+cargo run --locked --bin scarlite -- https://example.com --output example.svg --width 900 --height 600
 ```
 
-The historical baseline was inspected through actual Chrome 154.0.8037.92.
-It began RTL paragraphs from the left, misplaced mixed RTL content, and relied
-on installed fonts for CJK. The final **23 browser-rendered SVG/PNG pairs** cover
-welcome/start/article/bidi/inline/navigation/stacking/clipping at 320/900 px,
-start/article also at 640 px, Unicode at 60/640 px, HTTPS at 320/900 px, and the
-clipped negative child through wrapped inline decorations. Every inspected SVG
-has zero browser errors, duplicate IDs, non-finite text boxes, and visible
-`<text>` nodes. The outlined glyph groups preserve selected faces/direction.
+The seven original stress sources/timing cases are reproducible with the
+standard-library-only `tools/measure_layout.py`, writing outside the checkout.
+Elapsed times are engineering observations for this host, not portable speed
+guarantees; the historical engine did not execute Flex/Grid algorithms.
 
-Visual inspection confirms attached decomposed accents, visible CJK outlines,
-usable Arabic/Hebrew visual order, shared mixed-size/image baselines, sliced
-wrapped decorations, readable narrow article/navigation content, clear NOTE
-and NEW overlays, and the tested stacking/rounded clips. The start-page canary
-keeps five tiles at 320/640/900 px and heights 411/303/303 px. The article is
-2553/1418/1278 px tall at those widths. The unicode-640 preview contains 48
-bundled CJK run groups. The article's
-original absolute NOTE label needed reserved top padding under DejaVu; the
-font-matched source browser reproduced the collision before this original
-fixture was corrected. Welcome's original fixed 720 px main intentionally
-overflows a narrow viewport. HTTPS source is live rather than a pinned oracle.
+## Remaining gaps and next concrete milestone
 
-Local debug CLI timing alternates four historical/final process pairs per
-identical source, median of each engine's last three, at 640 px. The article source is 2,982 bytes; stress
-sources contain 4,000 spans (74,077 bytes) and a 50,000-character token
-(50,077 bytes). Baseline worktree is the historical commit above. These are
-local records, not portable benchmarks.
+The subsystem contracts document ideal Flexbox intrinsic fractions, full
+replaced-element automatic minima, Grid cyclic dependency reruns, auto-fit/fill,
+advanced alignment/placement, inset shadows and broader background syntax.
+Table formatting, margin collapsing, floats, transforms, multicolumn,
+sticky/fixed positioning, vertical writing, custom/variable fonts, general font
+matching, emoji/general script coverage, hyphenation, tailored breaking,
+justification, full cross-element shaping, fragment containing blocks and full
+painting-context promotion remain deferred. Outline SVG selection/search is
+limited. Parser diagnostic gaps remain separately visible. There is no JS,
+live DOM/event loop, browser window/chrome, crawler or separate application.
 
-| Case | Baseline median | Final median | Baseline SVG bytes | Final SVG bytes |
-| --- | ---: | ---: | ---: | ---: |
-| Article | 0.506598 s | 0.341179 s | 2,031,214 | 334,128 |
-| 4,000 spans | 0.698914 s | 0.498184 s | 3,700,767 | 5,740,649 |
-| 50,000-character token | 0.422889 s | 0.479856 s | 2,208,919 | 5,673,227 |
-
-An intermediate long-token implementation regressed because it shaped every
-grapheme during emergency sizing. It was replaced with shared shaped-cluster
-advances. Profiling then found repeated OpenType plan compilation and ASCII cmap
-lookups; bounded plan/coverage caches and ordered-vector cluster reduction
-removed those costs without changing SVG bytes. In this final local window the
-article and span cases take 0.67/0.71 times the historical median; the long token
-takes 1.13 times as long. Its richer glyph/run metadata makes SVG 2.57 times
-larger, while the article is substantially smaller. Process/host variation is
-material, so these figures establish investigated costs rather than a portable
-speed guarantee. Intermediate measurements remain external review records.
-
-Nested intrinsic-width caching was separately checked at 64/128 atomic levels:
-an intermediate 4.637/8.362 seconds became 0.438/0.494 seconds, with the 64-level
-SVG unchanged at 1,103,699 bytes. The 128-level case explicitly reaches the
-internal depth bound and emits a 205-byte truncated result; this is failure
-reporting, not complete content rendering.
-
-## Remaining gaps and next step
-
-No flex/grid/table formatting, margin collapsing, floats, transforms,
-multicolumn, sticky/fixed positioning, vertical writing, custom/variable fonts,
-general CSS font matching, emoji, general Korean/Indic/Thai coverage,
-hyphenation, tailored line breaking, justification, full cross-element shaping,
-fragment containing blocks, or full CSS painting-context promotion is claimed.
-Outline SVG text selection/search is limited; explicit tight line heights or
-position offsets can still intentionally overlap. Parser diagnostic gaps remain
-independently documented. There is no JS runtime, live DOM/event loop, desktop
-window, browser chrome, crawler, or separate UI application.
-
-The next concrete engine step is to pin WPT CSS cases for the implemented inline
-and positioning subset, then implement fragment containing blocks and promotion
-of positioned descendants through non-stacking ancestors while preserving clips
-and the same resolved runs. Complete cross-element shaping can follow those
-geometry checks.
+The next concrete Phos milestone is a pinned, licensed CSS interoperability
+corpus for the implemented sizing/layout subset, then Grid row-dependent
+intrinsic reruns and replaced-element transferred minimum sizes, followed by
+fragment containing blocks and positioned-descendant paint promotion without
+breaking ancestor clips. This engine foundation is ready for later real UI
+integration within the documented subset; broader conformance is not claimed.

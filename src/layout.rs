@@ -11,6 +11,8 @@ use std::rc::Rc;
 use unicode_bidi::BidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod grid_layout;
+
 const MAX_COORD: f32 = 1_000_000.0;
 const MAX_ITEMS: usize = 200_000;
 
@@ -34,6 +36,19 @@ pub struct BoxGeometry {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Primitive {
+    DecoratedBox {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        background: Option<Color>,
+        border_color: Color,
+        border_width: [f32; 4],
+        border_style: BorderStyle,
+        radius: [f32; 4],
+        gradient: Option<crate::effects::LinearGradient>,
+        shadows: Vec<crate::effects::BoxShadow>,
+    },
     Box {
         x: f32,
         y: f32,
@@ -76,7 +91,10 @@ pub enum Primitive {
 impl Primitive {
     fn translate(&mut self, dx: f32, dy: f32) {
         match self {
-            Self::Box { x, y, .. } | Self::Image { x, y, .. } | Self::ClipStart { x, y, .. } => {
+            Self::Box { x, y, .. }
+            | Self::DecoratedBox { x, y, .. }
+            | Self::Image { x, y, .. }
+            | Self::ClipStart { x, y, .. } => {
                 *x = (*x + dx).clamp(-MAX_COORD, MAX_COORD);
                 *y = (*y + dy).clamp(-MAX_COORD, MAX_COORD);
             }
@@ -144,11 +162,7 @@ fn edge_values(edges: Edges, base: f32) -> [f32; 4] {
 }
 
 fn vertical_length(length: Length, containing_height: Option<f32>) -> Option<f32> {
-    match length {
-        Length::Px(value) => Some(value),
-        Length::Percent(percent) => containing_height.map(|height| height * percent / 100.0),
-        Length::Auto => None,
-    }
+    length.resolve_indefinite(containing_height)
 }
 
 fn inset(style: &ComputedStyle, base: f32) -> ([f32; 4], [f32; 4]) {
@@ -173,6 +187,42 @@ fn rounded(style: &ComputedStyle, width: f32, height: f32) -> [f32; 4] {
             .unwrap_or(0.0)
             .clamp(0.0, width.min(height) / 2.0)
     })
+}
+
+fn box_primitive(
+    style: &ComputedStyle,
+    geometry: (f32, f32, f32, f32),
+    border_width: [f32; 4],
+    radius: [f32; 4],
+) -> Primitive {
+    let (x, y, width, height) = geometry;
+    if style.background_gradient.is_some() || !style.box_shadows.is_empty() {
+        Primitive::DecoratedBox {
+            x,
+            y,
+            width,
+            height,
+            background: style.background,
+            border_color: style.border_color,
+            border_width,
+            border_style: style.border_style,
+            radius,
+            gradient: style.background_gradient.clone(),
+            shadows: style.box_shadows.clone(),
+        }
+    } else {
+        Primitive::Box {
+            x,
+            y,
+            width,
+            height,
+            background: style.background,
+            border_color: style.border_color,
+            border_width,
+            border_style: style.border_style,
+            radius,
+        }
+    }
 }
 
 enum FlowItem {
@@ -203,7 +253,41 @@ struct Builder<'a> {
     absolute_override: Option<(NodeId, crate::position::AbsoluteSize)>,
     anchors: Vec<crate::position::LayoutAnchor>,
     budget: Rc<Cell<usize>>,
-    intrinsic_text_widths: Rc<RefCell<Vec<Option<f32>>>>,
+    intrinsic: Rc<crate::intrinsic::IntrinsicCache<'a>>,
+    measure_only: bool,
+    measure_budget: Rc<Cell<usize>>,
+    measurements: Rc<RefCell<HashMap<MeasureKey, MeasureResult>>>,
+    layout_override: Option<(NodeId, SizeOverride)>,
+    layout_work: Rc<Cell<usize>>,
+    viewport_height: Option<f32>,
+    first_flow_baseline: Option<f32>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SizeOverride {
+    width: Option<f32>,
+    height: Option<f32>,
+    suppress_margins: bool,
+    indefinite_height: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MeasureKey {
+    node: NodeId,
+    width: u32,
+    height: Option<u32>,
+    forced_width: Option<u32>,
+    forced_height: Option<u32>,
+    indefinite_height: bool,
+    children_only: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+struct MeasureResult {
+    width: f32,
+    height: f32,
+    baseline: Option<f32>,
+    truncated: bool,
 }
 
 struct Captured {
@@ -286,7 +370,14 @@ impl<'a> Builder<'a> {
             absolute_override: None,
             anchors: Vec::new(),
             budget: self.budget.clone(),
-            intrinsic_text_widths: self.intrinsic_text_widths.clone(),
+            intrinsic: self.intrinsic.clone(),
+            measure_only: self.measure_only,
+            measure_budget: self.measure_budget.clone(),
+            measurements: self.measurements.clone(),
+            layout_override: None,
+            layout_work: self.layout_work.clone(),
+            viewport_height: self.viewport_height,
+            first_flow_baseline: None,
         }
     }
 
@@ -313,10 +404,10 @@ impl<'a> Builder<'a> {
                 items.push(FlowItem::Absolute)
             }
             NodeKind::Element(element) if element.tag == "br" => items.push(FlowItem::Break(id)),
-            NodeKind::Element(_) if self.styles[id].display == Display::Block => {
+            NodeKind::Element(_) if self.styles[id].display.is_block_level() => {
                 items.push(FlowItem::Block(id))
             }
-            NodeKind::Element(_) if self.styles[id].display == Display::InlineBlock => {
+            NodeKind::Element(_) if self.styles[id].display.is_atomic() => {
                 items.push(FlowItem::Atomic(id))
             }
             NodeKind::Element(_) => {
@@ -420,6 +511,13 @@ impl<'a> Builder<'a> {
         }
         let height = (ascent + descent).clamp(1.0, MAX_COORD);
         let baseline = (line.y + ascent).clamp(-MAX_COORD, MAX_COORD);
+        if self.measure_only {
+            if self.first_flow_baseline.is_none() {
+                self.first_flow_baseline = Some(baseline);
+            }
+            self.last_flow_baseline = Some(baseline);
+            return (line.y + height).min(MAX_COORD);
+        }
         let spare = line.width - line.advance;
         let offset = match parent_style.text_align.physical(parent_style.direction) {
             TextAlign::Center => spare / 2.0,
@@ -527,7 +625,11 @@ impl<'a> Builder<'a> {
                 height: fragment_height,
                 kind: BoxKind::InlineFragment,
             });
-            if style.background.is_some() || style.border_style != BorderStyle::None {
+            if style.background.is_some()
+                || style.background_gradient.is_some()
+                || !style.box_shadows.is_empty()
+                || style.border_style != BorderStyle::None
+            {
                 let mut fragment_border = border;
                 if !physical_left {
                     fragment_border[3] = 0.0;
@@ -545,17 +647,12 @@ impl<'a> Builder<'a> {
                     radius[2] = 0.0;
                 }
                 self.inline_backgrounds.push((id, self.primitives.len()));
-                self.primitives.push(Primitive::Box {
-                    x,
-                    y,
-                    width,
-                    height: fragment_height,
-                    background: style.background,
-                    border_color: style.border_color,
-                    border_width: fragment_border,
-                    border_style: style.border_style,
+                self.primitives.push(box_primitive(
+                    style,
+                    (x, y, width, fragment_height),
+                    fragment_border,
                     radius,
-                });
+                ));
             }
         }
         let run_start = self.runs.len();
@@ -674,6 +771,9 @@ impl<'a> Builder<'a> {
             },
         );
         self.last_flow_baseline = Some(baseline);
+        if self.first_flow_baseline.is_none() {
+            self.first_flow_baseline = Some(baseline);
+        }
         (line.y + height).min(MAX_COORD)
     }
 
@@ -694,6 +794,8 @@ impl<'a> Builder<'a> {
                 .is_some_and(|element| element.tag == "img")
         {
             h
+        } else if self.styles[id].display.is_flex() || self.styles[id].display.is_grid() {
+            nested.first_flow_baseline.unwrap_or(h)
         } else {
             nested.last_flow_baseline.unwrap_or(h)
         };
@@ -813,41 +915,9 @@ impl<'a> Builder<'a> {
                     let mut offset = 0;
                     let mut chunks = Vec::new();
                     let graphemes: Vec<_> = run.content.grapheme_indices(true).collect();
-                    let mut advances = vec![0.0; graphemes.len()];
-                    let mut clusters: Vec<_> = run
-                        .glyphs
-                        .iter()
-                        .map(|glyph| (glyph.cluster, glyph.advance))
-                        .collect();
-                    // Stable sorting preserves the shaped glyph addition order within
-                    // each cluster without allocating a tree node for every glyph.
-                    clusters.sort_by_key(|&(cluster, _)| cluster);
-                    let mut distinct = 0;
-                    for read in 0..clusters.len() {
-                        let (cluster, advance) = clusters[read];
-                        if distinct == 0 || clusters[distinct - 1].0 != cluster {
-                            clusters[distinct] = (cluster, 0.0);
-                            distinct += 1;
-                        }
-                        clusters[distinct - 1].1 += advance;
-                    }
-                    clusters.truncate(distinct);
-                    for (i, &(cluster, advance)) in clusters.iter().enumerate() {
-                        let start = graphemes
-                            .partition_point(|(offset, _)| *offset <= cluster)
-                            .saturating_sub(1);
-                        let next = clusters
-                            .get(i + 1)
-                            .map_or(run.content.len(), |&(offset, _)| offset);
-                        let end = graphemes
-                            .partition_point(|(offset, _)| *offset < next)
-                            .max(start + 1)
-                            .min(graphemes.len());
-                        let share = advance / (end - start) as f32;
-                        for value in &mut advances[start..end] {
-                            *value += share;
-                        }
-                    }
+                    let advances = text::grapheme_advances(run)
+                        .into_iter()
+                        .map(|(_, advance)| advance);
                     for ((_, g), advance) in graphemes.into_iter().zip(advances) {
                         if !chunk.is_empty() && chunk_width + advance > width.max(0.0) {
                             chunks.push((std::mem::take(&mut chunk), offset));
@@ -938,17 +1008,30 @@ impl<'a> Builder<'a> {
         x: f32,
         y: f32,
         width: f32,
-        containing_height: Option<f32>,
+        height_space: crate::sizing::AxisSpace,
         depth: usize,
     ) -> f32 {
+        let containing_height = height_space.percentage_basis;
         use crate::style::UnicodeBidi;
         if depth > 256 || self.primitives.len() >= MAX_ITEMS {
             self.truncated = true;
             return 0.0;
         }
+        if self.styles[id].display.is_flex() {
+            return self.flex_children(id, x, y, width, height_space, depth);
+        }
+        if self.styles[id].display.is_grid() {
+            return self.grid_children(id, x, y, width, height_space, depth);
+        }
         let mut items = Vec::new();
-        for &child in &self.document.nodes[id].children {
-            self.flatten(child, &mut items, depth + 1, 0);
+        if matches!(self.document.nodes[id].kind, NodeKind::Text(_)) {
+            for node in self.intrinsic.anonymous_nodes(id) {
+                self.flatten(node, &mut items, depth + 1, 0);
+            }
+        } else {
+            for &child in &self.document.nodes[id].children {
+                self.flatten(child, &mut items, depth + 1, 0);
+            }
         }
         let mut paragraph = crate::paragraph::Paragraph::new(self.budget.clone());
         let mut active = Vec::new();
@@ -1118,7 +1201,15 @@ impl<'a> Builder<'a> {
         let (padding, border) = inset(style, available);
         let horizontal_inset = padding[1] + padding[3] + border[1] + border[3];
         let vertical_inset = padding[0] + padding[2] + border[0] + border[2];
-        let margins = edge_values(style.margin, available);
+        let forced = self
+            .layout_override
+            .filter(|(node, _)| *node == id)
+            .map(|(_, size)| size);
+        let margins = if forced.is_some_and(|size| size.suppress_margins) {
+            [0.0; 4]
+        } else {
+            edge_values(style.margin, available)
+        };
         let image = self.images.get(id).and_then(|image| image.as_ref());
         let is_image = self
             .document
@@ -1131,62 +1222,83 @@ impl<'a> Builder<'a> {
                 .and_then(|value| value.trim().parse::<f32>().ok())
                 .filter(|value| value.is_finite() && (0.0..=16_384.0).contains(value))
         };
-        let html_width = if is_image {
+        let html_width = if is_image && !style.width_declared {
             html_dimension("width")
         } else {
             None
         };
-        let html_height = if is_image {
+        let html_height = if is_image && !style.height_declared {
             html_dimension("height")
         } else {
             None
         };
-        let css_width = absolute_size
-            .and_then(|size| size.content_width)
-            .or_else(|| {
-                style
-                    .width
-                    .and_then(|value| value.resolve(available))
-                    .map(|specified| {
-                        if style.box_sizing == BoxSizing::BorderBox {
-                            specified - horizontal_inset
-                        } else {
-                            specified
-                        }
+        let css_width = forced.and_then(|size| size.width).or_else(|| {
+            absolute_size
+                .and_then(|size| size.content_width)
+                .or_else(|| {
+                    style.width.and_then(|value| {
+                        self.resolved_width(id, value, available, horizontal_inset)
                     })
-            });
-        let css_height = absolute_size
-            .and_then(|size| size.content_height)
-            .or_else(|| {
-                style
-                    .height
-                    .and_then(|value| vertical_length(value, containing_height))
-                    .map(|specified| {
-                        if style.box_sizing == BoxSizing::BorderBox {
-                            specified - vertical_inset
-                        } else {
-                            specified
-                        }
-                    })
-            });
-        let mut content_width = css_width.or(html_width).or_else(|| {
-            image
-                .zip(css_height.or(html_height))
-                .map(|(image, height)| image.width * height / image.height.max(1.0))
+                })
         });
+        let height_constraint = |value: Option<Length>| {
+            value
+                .and_then(|length| vertical_length(length, containing_height))
+                .map(|value| crate::sizing::content_size(value, vertical_inset, style.box_sizing))
+        };
+        let minimum_height = height_constraint(style.min_height);
+        let maximum_height = height_constraint(style.max_height);
+        let html_height = html_height
+            .map(|height| crate::sizing::constrain(height, minimum_height, maximum_height));
+        let css_height = forced
+            .and_then(|size| size.height)
+            .or_else(|| {
+                absolute_size
+                    .and_then(|size| size.content_height)
+                    .or_else(|| {
+                        style
+                            .height
+                            .and_then(|value| vertical_length(value, containing_height))
+                            .map(|specified| {
+                                if style.box_sizing == BoxSizing::BorderBox {
+                                    specified - vertical_inset
+                                } else {
+                                    specified
+                                }
+                            })
+                    })
+            })
+            .map(|height| crate::sizing::constrain(height, minimum_height, maximum_height));
+        let width_constraint = |value: Option<Length>| {
+            value.and_then(|value| self.resolved_width(id, value, available, horizontal_inset))
+        };
+        let replaced = image.map(|image| {
+            crate::sizing::replaced_size(
+                (image.width, image.height),
+                (css_width.or(html_width), css_height.or(html_height)),
+                (width_constraint(style.min_width), minimum_height),
+                (width_constraint(style.max_width), maximum_height),
+            )
+        });
+        let mut content_width = replaced.map(|size| size.0).or(css_width).or(html_width);
         if content_width.is_none() && atomic {
             content_width = Some(
-                self.intrinsic_width(id)
-                    .min((available - horizontal_inset).max(0.0)),
+                self.intrinsic
+                    .content(id)
+                    .shrink_to_fit(available - horizontal_inset - margins[1] - margins[3]),
             );
         }
         let auto_width = content_width.is_none();
-        let left = if style.margin.left.resolve(available).is_none() {
+        let left = if forced.is_some_and(|size| size.suppress_margins)
+            || style.margin.left.resolve(available).is_none()
+        {
             0.0
         } else {
             margins[3]
         };
-        let right = if style.margin.right.resolve(available).is_none() {
+        let right = if forced.is_some_and(|size| size.suppress_margins)
+            || style.margin.right.resolve(available).is_none()
+        {
             0.0
         } else {
             margins[1]
@@ -1194,13 +1306,7 @@ impl<'a> Builder<'a> {
         let mut content_width =
             content_width.unwrap_or((available - left - right - horizontal_inset).max(0.0));
         let constraint = |value: Option<crate::style::Length>| {
-            value.and_then(|v| v.resolve(available)).map(|v| {
-                if style.box_sizing == BoxSizing::BorderBox {
-                    v - horizontal_inset
-                } else {
-                    v
-                }
-            })
+            value.and_then(|v| self.resolved_width(id, v, available, horizontal_inset))
         };
         if let Some(max) = constraint(style.max_width) {
             content_width = content_width.min(max);
@@ -1210,25 +1316,44 @@ impl<'a> Builder<'a> {
         }
         content_width = content_width.clamp(0.0, MAX_COORD);
         let remaining = (available - content_width - horizontal_inset - left - right).max(0.0);
-        let (margin_left, margin_right) = if auto_width {
-            (left, right)
-        } else {
-            match (
-                style.margin.left.resolve(available).is_none(),
-                style.margin.right.resolve(available).is_none(),
-            ) {
-                (true, true) => (remaining / 2.0, remaining / 2.0),
-                (true, false) => (remaining, right),
-                (false, true) => (left, remaining),
-                _ => (left, right),
-            }
-        };
+        let (margin_left, margin_right) =
+            if auto_width || forced.is_some_and(|size| size.suppress_margins) {
+                (left, right)
+            } else {
+                match (
+                    style.margin.left.resolve(available).is_none(),
+                    style.margin.right.resolve(available).is_none(),
+                ) {
+                    (true, true) => (remaining / 2.0, remaining / 2.0),
+                    (true, false) => (remaining, right),
+                    (false, true) => (left, remaining),
+                    _ => (left, right),
+                }
+            };
         let outer_x = (x + margin_left).clamp(-MAX_COORD, MAX_COORD);
         let outer_y = (y + margins[0]).clamp(-MAX_COORD, MAX_COORD);
         let border_width = (content_width + horizontal_inset).clamp(0.0, MAX_COORD);
         let content_x = (outer_x + border[3] + padding[3]).clamp(-MAX_COORD, MAX_COORD);
         let content_y = (outer_y + border[0] + padding[0]).clamp(-MAX_COORD, MAX_COORD);
         let paint_index = self.primitives.len();
+        // Auto-height formatting containers first measure their natural content.
+        // A changed min/max used height then participates in track/cross sizing.
+        // This dry pass is cached and cannot append final geometry or paint.
+        let used_height = css_height.or(html_height).or_else(|| {
+            if (style.display.is_flex() || style.display.is_grid())
+                && (minimum_height.is_some() || maximum_height.is_some())
+            {
+                let natural = self.measure_children(id, content_width, depth).height;
+                let constrained = crate::sizing::constrain(natural, minimum_height, maximum_height);
+                if (natural - constrained).abs() > 0.0001 {
+                    Some(constrained)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
         let child_height = if is_image {
             0.0
         } else {
@@ -1237,7 +1362,14 @@ impl<'a> Builder<'a> {
                 content_x,
                 content_y,
                 content_width,
-                css_height.or(html_height),
+                crate::sizing::AxisSpace::new(
+                    used_height,
+                    if forced.is_some_and(|size| size.indefinite_height) {
+                        None
+                    } else {
+                        css_height.or(html_height)
+                    },
+                ),
                 depth + 1,
             )
         };
@@ -1246,7 +1378,7 @@ impl<'a> Builder<'a> {
         } else {
             child_height
         };
-        let mut content_height = css_height.or(html_height).unwrap_or_else(|| {
+        let mut content_height = used_height.unwrap_or_else(|| {
             if let Some(image) = image {
                 image.height * content_width / image.width.max(1.0)
             } else if is_image {
@@ -1255,25 +1387,21 @@ impl<'a> Builder<'a> {
                 child_height
             }
         });
-        let height_constraint = |value: Option<Length>| {
-            value
-                .and_then(|length| vertical_length(length, containing_height))
-                .map(|value| {
-                    if style.box_sizing == BoxSizing::BorderBox {
-                        (value - vertical_inset).max(0.0)
-                    } else {
-                        value
-                    }
-                })
-        };
-        if let Some(max) = height_constraint(style.max_height) {
+        if let Some(max) = maximum_height {
             content_height = content_height.min(max);
         }
-        if let Some(min) = height_constraint(style.min_height) {
+        if let Some(min) = minimum_height {
             content_height = content_height.max(min);
         }
         content_height = content_height.clamp(0.0, MAX_COORD);
         let border_height = (content_height + vertical_inset).clamp(0.0, MAX_COORD);
+        if self.measure_only {
+            self.current_group = parent_group;
+            return (
+                (border_width + margin_left + margin_right).clamp(0.0, MAX_COORD),
+                (margins[0] + border_height + margins[2]).clamp(0.0, MAX_COORD),
+            );
+        }
         self.boxes.push(BoxGeometry {
             node: Some(id),
             x: outer_x,
@@ -1282,21 +1410,19 @@ impl<'a> Builder<'a> {
             height: border_height,
             kind: BoxKind::Element,
         });
-        let has_box_paint = style.background.is_some() || style.border_style != BorderStyle::None;
+        let has_box_paint = style.background.is_some()
+            || style.background_gradient.is_some()
+            || !style.box_shadows.is_empty()
+            || style.border_style != BorderStyle::None;
         if has_box_paint {
             self.primitives.insert(
                 paint_index,
-                Primitive::Box {
-                    x: outer_x,
-                    y: outer_y,
-                    width: border_width,
-                    height: border_height,
-                    background: style.background,
-                    border_color: style.border_color,
-                    border_width: border,
-                    border_style: style.border_style,
-                    radius: rounded(style, border_width, border_height),
-                },
+                box_primitive(
+                    style,
+                    (outer_x, outer_y, border_width, border_height),
+                    border,
+                    rounded(style, border_width, border_height),
+                ),
             );
             for group in &mut self.paint_groups[group_start..] {
                 group.offset(1);
@@ -1610,7 +1736,7 @@ impl<'a> Builder<'a> {
                 x: 0.0,
                 y: 0.0,
                 width: viewport_width,
-                height: None,
+                height: self.viewport_height,
             };
             let mut direction = initial_direction;
             let mut static_origin = (0.0, 0.0);
@@ -1639,7 +1765,7 @@ impl<'a> Builder<'a> {
                 }
                 ancestor = self.document.nodes[node].parent;
             }
-            let intrinsic = self.intrinsic_width(id);
+            let intrinsic = self.intrinsic.content(id);
             let style = &self.styles[id];
             let image = self.images.get(id).and_then(|image| image.as_ref());
             // HTML image dimensions remain explicit content dimensions. Model
@@ -1662,10 +1788,11 @@ impl<'a> Builder<'a> {
                 };
                 let (padding, border) = inset(style, containing.width);
                 let mut resolved = style.clone();
-                if style
-                    .width
-                    .and_then(|length| length.resolve(containing.width))
-                    .is_none()
+                if !style.width_declared
+                    && style
+                        .width
+                        .and_then(|length| length.resolve(containing.width))
+                        .is_none()
                     && let Some(width) = html_dimension("width")
                 {
                     let inset = if style.box_sizing == BoxSizing::BorderBox {
@@ -1675,10 +1802,11 @@ impl<'a> Builder<'a> {
                     };
                     resolved.width = Some(Length::Px((width + inset).clamp(0.0, MAX_COORD)));
                 }
-                if style
-                    .height
-                    .and_then(|length| vertical_length(length, containing.height))
-                    .is_none()
+                if !style.height_declared
+                    && style
+                        .height
+                        .and_then(|length| vertical_length(length, containing.height))
+                        .is_none()
                     && let Some(height) = html_dimension("height")
                 {
                     let inset = if style.box_sizing == BoxSizing::BorderBox {
@@ -1691,7 +1819,8 @@ impl<'a> Builder<'a> {
                 replaced_style = Some(resolved);
             }
             let sizing_style = replaced_style.as_ref().unwrap_or(style);
-            let mut size = absolute_size(sizing_style, containing, intrinsic);
+            let mut size =
+                crate::position::absolute_size_with_intrinsic(sizing_style, containing, intrinsic);
             if let Some(image) = image
                 && sizing_style
                     .width
@@ -1773,55 +1902,567 @@ impl<'a> Builder<'a> {
             self.inline_backgrounds.extend(inline_backgrounds);
         }
     }
+}
 
-    fn intrinsic_width(&self, id: NodeId) -> f32 {
-        if let Some(width) = self
-            .document
-            .element(id)
-            .filter(|element| element.tag == "img")
-            .and_then(|element| element.attribute("width"))
-            .and_then(|value| value.parse::<f32>().ok())
-            .filter(|value| value.is_finite() && (0.0..=16_384.0).contains(value))
-        {
-            return width;
-        }
-        if let Some(image) = self.images.get(id).and_then(|image| image.as_ref()) {
-            return image.width;
-        }
-        if let Some(alt) = self
-            .document
-            .element(id)
-            .filter(|element| element.tag == "img")
-            .and_then(|element| element.attribute("alt"))
-        {
-            return text::width(alt, self.styles[id].font_size, self.styles[id].bold);
-        }
-        let mut width = 0.0;
-        let mut pending = vec![id];
-        while let Some(node) = pending.pop() {
-            if width > MAX_COORD {
-                break;
-            }
-            if node != id
-                && (!is_visible(self.document, self.styles, node)
-                    || self.styles[node].position == crate::style::Position::Absolute)
-            {
-                continue;
-            }
-            if let NodeKind::Text(value) = &self.document.nodes[node].kind {
-                let style = &self.styles[node];
-                let cached = { self.intrinsic_text_widths.borrow()[node] };
-                let measured = cached.unwrap_or_else(|| {
-                    let measured = text::width(value.trim(), style.font_size, style.bold);
-                    self.intrinsic_text_widths.borrow_mut()[node] = Some(measured);
-                    measured
-                });
-                width += measured;
-            }
-            pending.extend(self.document.nodes[node].children.iter().copied());
-        }
-        width.min(MAX_COORD)
+impl Builder<'_> {
+    fn resolved_width(
+        &self,
+        id: NodeId,
+        length: Length,
+        available: f32,
+        inset: f32,
+    ) -> Option<f32> {
+        let intrinsic = if matches!(length, Length::MinContent | Length::MaxContent) {
+            self.intrinsic.content(id)
+        } else {
+            crate::sizing::IntrinsicSizes::default()
+        };
+        crate::sizing::resolve_content_size(
+            intrinsic,
+            length,
+            crate::sizing::AvailableSize::Definite(available),
+            inset,
+            self.styles[id].box_sizing,
+        )
     }
+    fn formatting_items(&mut self, id: NodeId) -> Vec<NodeId> {
+        self.intrinsic.formatting_nodes(id)
+    }
+
+    fn measure_item(
+        &mut self,
+        id: NodeId,
+        available: f32,
+        height: Option<f32>,
+        forced: SizeOverride,
+        depth: usize,
+    ) -> MeasureResult {
+        let key = MeasureKey {
+            node: id,
+            width: available.to_bits(),
+            height: height.map(f32::to_bits),
+            forced_width: forced.width.map(f32::to_bits),
+            forced_height: forced.height.map(f32::to_bits),
+            indefinite_height: forced.indefinite_height,
+            children_only: false,
+        };
+        if let Some(result) = self.measurements.borrow().get(&key).copied() {
+            self.truncated |= result.truncated;
+            return result;
+        }
+        if self.measure_budget.get() == 0
+            || self.measurements.borrow().len() >= 16_384
+            || depth > 256
+        {
+            self.truncated = true;
+            return MeasureResult {
+                truncated: true,
+                ..MeasureResult::default()
+            };
+        }
+        let mut dry = self.nested();
+        dry.measure_only = true;
+        dry.budget = self.measure_budget.clone();
+        dry.layout_override = Some((id, forced));
+        let (width, height) = dry.block(id, (0.0, 0.0), available, height, depth + 1, false);
+        let baseline = if self.document.element(id).is_some_and(|e| e.tag == "img") {
+            Some(height)
+        } else {
+            Some(dry.first_flow_baseline.unwrap_or(height))
+        };
+        let mut result = MeasureResult {
+            width,
+            height,
+            baseline,
+            truncated: dry.truncated,
+        };
+        debug_assert!(dry.primitives.is_empty(), "measurement must not paint");
+        if self.measurements.borrow().len() < 16_384 {
+            self.measurements.borrow_mut().insert(key, result);
+        } else {
+            result.truncated = true;
+        }
+        self.truncated |= result.truncated;
+        result
+    }
+
+    fn measure_children(&mut self, id: NodeId, width: f32, depth: usize) -> MeasureResult {
+        let key = MeasureKey {
+            node: id,
+            width: width.to_bits(),
+            children_only: true,
+            height: None,
+            forced_width: None,
+            forced_height: None,
+            indefinite_height: false,
+        };
+        if let Some(result) = self.measurements.borrow().get(&key).copied() {
+            self.truncated |= result.truncated;
+            return result;
+        }
+        if self.measure_budget.get() == 0
+            || self.measurements.borrow().len() >= 16_384
+            || depth > 256
+        {
+            self.truncated = true;
+            return MeasureResult {
+                truncated: true,
+                ..MeasureResult::default()
+            };
+        }
+        let mut dry = self.nested();
+        dry.measure_only = true;
+        dry.budget = self.measure_budget.clone();
+        let height = dry.children(
+            id,
+            0.0,
+            0.0,
+            width,
+            crate::sizing::AxisSpace::new(None, None),
+            depth + 1,
+        );
+        let mut result = MeasureResult {
+            width,
+            height,
+            baseline: dry.first_flow_baseline,
+            truncated: dry.truncated,
+        };
+        debug_assert!(dry.primitives.is_empty(), "measurement must not paint");
+        if self.measurements.borrow().len() < 16_384 {
+            self.measurements.borrow_mut().insert(key, result);
+        } else {
+            result.truncated = true;
+        }
+        self.truncated |= result.truncated;
+        result
+    }
+
+    fn lay_out_item(
+        &mut self,
+        id: NodeId,
+        origin: (f32, f32),
+        available: f32,
+        height: Option<f32>,
+        forced: SizeOverride,
+        depth: usize,
+    ) {
+        if self.measure_only {
+            let measured = self.measure_item(id, available, height, forced, depth);
+            if let Some(baseline) = measured.baseline {
+                if self.first_flow_baseline.is_none() {
+                    self.first_flow_baseline = Some(origin.1 + baseline);
+                }
+                self.last_flow_baseline = Some(origin.1 + baseline);
+            }
+            return;
+        }
+        let old = self.layout_override;
+        self.layout_override = Some((id, forced));
+        self.block(id, origin, available, height, depth + 1, false);
+        self.layout_override = old;
+    }
+
+    fn flex_children(
+        &mut self,
+        id: NodeId,
+        x: f32,
+        y: f32,
+        width: f32,
+        height_space: crate::sizing::AxisSpace,
+        depth: usize,
+    ) -> f32 {
+        use crate::flex::{
+            Config, CrossMeasurement, Item, resolve_cross, resolve_main_with_budget,
+        };
+        use crate::sizing::{AvailableSize, MAX_SIZE, content_size};
+        let height = height_space.available.definite();
+        let percentage_height = height_space.percentage_basis;
+        if self.layout_work.get() == 0 {
+            self.truncated = true;
+            return 0.0;
+        }
+        let nodes = self.formatting_items(id);
+        if nodes.len() > self.layout_work.get() {
+            self.truncated = true;
+            self.layout_work.set(0);
+            return 0.0;
+        }
+        self.layout_work.set(self.layout_work.get() - nodes.len());
+        let style = &self.styles[id];
+        let row = style.flex_direction.is_row();
+        let (padding, border) = inset(style, width);
+        let vertical_inset = padding[0] + padding[2] + border[0] + border[2];
+        let height_limit = |value: Option<Length>| {
+            value
+                .and_then(|value| value.resolve_indefinite(None))
+                .map(|value| content_size(value, vertical_inset, style.box_sizing))
+        };
+        let collection_limit = height_limit(style.max_height)
+            .map(|maximum| maximum.max(height_limit(style.min_height).unwrap_or(0.0)));
+        let config = Config {
+            main_size: if row {
+                AvailableSize::Definite(width)
+            } else {
+                AvailableSize::from_option(height)
+            },
+            collection_size: if row || percentage_height.is_some() {
+                None
+            } else {
+                Some(AvailableSize::from_option(collection_limit))
+            },
+            cross_size: if row {
+                AvailableSize::from_option(height)
+            } else {
+                AvailableSize::Definite(width)
+            },
+            direction: style.flex_direction,
+            wrap: style.flex_wrap,
+            rtl: style.direction == crate::style::Direction::Rtl,
+            main_gap: if row {
+                style.column_gap.resolve(width)
+            } else {
+                style.row_gap.resolve_indefinite(percentage_height)
+            }
+            .unwrap_or(0.0),
+            cross_gap: if row {
+                style.row_gap.resolve_indefinite(percentage_height)
+            } else {
+                style.column_gap.resolve(width)
+            }
+            .unwrap_or(0.0),
+            justify_content: style.justify_content,
+            align_items: style.align_items,
+            align_content: style.align_content,
+        };
+        let mut inputs = Vec::new();
+        for &node in &nodes {
+            let s = &self.styles[node];
+            let needs_intrinsic = !row
+                || [s.width, s.min_width, s.max_width, Some(s.flex_basis)]
+                    .into_iter()
+                    .flatten()
+                    .any(|v| matches!(v, Length::MinContent | Length::MaxContent))
+                || (!s.overflow_hidden
+                    && s.min_width
+                        .and_then(|v| v.resolve_indefinite(Some(width)))
+                        .is_none())
+                || (matches!(s.flex_basis, Length::Auto)
+                    && s.width
+                        .and_then(|v| v.resolve_indefinite(Some(width)))
+                        .is_none());
+            let intrinsic = if needs_intrinsic {
+                self.intrinsic.content(node)
+            } else {
+                crate::sizing::IntrinsicSizes::default()
+            };
+            let (p, b) = inset(s, width);
+            let horizontal = p[1] + p[3] + b[1] + b[3];
+            let vertical = p[0] + p[2] + b[0] + b[2];
+            let main_inset = if row { horizontal } else { vertical };
+            let cross_inset = if row { vertical } else { horizontal };
+            let main_available = if row { Some(width) } else { percentage_height };
+            let cross_available = if row { percentage_height } else { Some(width) };
+            let resolve_main_size = |value: Length| {
+                if row {
+                    intrinsic.resolve(value, config.main_size)
+                } else {
+                    value.resolve_indefinite(main_available)
+                }
+            };
+            let main_content = |value: Length| {
+                resolve_main_size(value).map(|v| {
+                    if matches!(value, Length::MinContent | Length::MaxContent) {
+                        v
+                    } else {
+                        content_size(v, main_inset, s.box_sizing)
+                    }
+                })
+            };
+            let preferred_property = if row { s.width } else { s.height };
+            let preferred = preferred_property.and_then(main_content);
+            let preferred_base = preferred_property.and_then(resolve_main_size).map(|v| {
+                if matches!(
+                    preferred_property,
+                    Some(Length::MinContent | Length::MaxContent)
+                ) || s.box_sizing == BoxSizing::ContentBox
+                {
+                    v
+                } else {
+                    v - main_inset
+                }
+            });
+            let natural = if row {
+                intrinsic.max_content
+            } else {
+                let natural_width = s
+                    .width
+                    .and_then(|v| {
+                        crate::sizing::resolve_content_size(
+                            intrinsic,
+                            v,
+                            AvailableSize::Definite(width),
+                            horizontal,
+                            s.box_sizing,
+                        )
+                    })
+                    .unwrap_or(
+                        (width - horizontal)
+                            .max(intrinsic.min_content)
+                            .min(intrinsic.max_content),
+                    );
+                self.measure_item(
+                    node,
+                    width,
+                    percentage_height,
+                    SizeOverride {
+                        width: Some(natural_width),
+                        height: None,
+                        suppress_margins: true,
+                        indefinite_height: false,
+                    },
+                    depth,
+                )
+                .height
+                    - vertical
+            };
+            let base = if matches!(s.flex_basis, Length::Auto) {
+                preferred_base.unwrap_or(natural)
+            } else {
+                resolve_main_size(s.flex_basis)
+                    .map(|v| {
+                        if matches!(s.flex_basis, Length::MinContent | Length::MaxContent)
+                            || s.box_sizing == BoxSizing::ContentBox
+                        {
+                            v
+                        } else {
+                            v - main_inset
+                        }
+                    })
+                    .unwrap_or(natural)
+            };
+            let min_property = if row { s.min_width } else { s.min_height };
+            let max_property = if row { s.max_width } else { s.max_height };
+            let maximum = max_property.and_then(main_content);
+            let minimum = min_property.and_then(main_content).unwrap_or_else(|| {
+                if s.overflow_hidden {
+                    0.0
+                } else {
+                    if row { intrinsic.min_content } else { natural }
+                        .min(preferred.unwrap_or(MAX_SIZE))
+                        .min(maximum.unwrap_or(MAX_SIZE))
+                }
+            });
+            let cross_resolve = |value: Length| {
+                if row {
+                    value.resolve_indefinite(cross_available)
+                } else {
+                    intrinsic.resolve(value, config.cross_size)
+                }
+            };
+            let cross_content = |value: Length| {
+                cross_resolve(value).map(|v| {
+                    if matches!(value, Length::MinContent | Length::MaxContent) {
+                        v
+                    } else {
+                        content_size(v, cross_inset, s.box_sizing)
+                    }
+                })
+            };
+            let min_cross = if row { s.min_height } else { s.min_width }
+                .and_then(cross_content)
+                .unwrap_or(0.0);
+            let max_cross = if row { s.max_height } else { s.max_width }.and_then(cross_content);
+            let margin = |length: Length| {
+                if matches!(length, Length::Auto) {
+                    None
+                } else {
+                    Some(length.resolve(width).unwrap_or(0.0))
+                }
+            };
+            inputs.push(Item {
+                order: s.order,
+                base_size: base,
+                min_size: minimum,
+                max_size: maximum,
+                main_inset,
+                cross_inset,
+                main_margin: if row {
+                    [margin(s.margin.left), margin(s.margin.right)]
+                } else {
+                    [margin(s.margin.top), margin(s.margin.bottom)]
+                },
+                cross_margin: if row {
+                    [margin(s.margin.top), margin(s.margin.bottom)]
+                } else {
+                    [margin(s.margin.left), margin(s.margin.right)]
+                },
+                grow: s.flex_grow,
+                shrink: s.flex_shrink,
+                cross_auto: if row { s.height } else { s.width }
+                    .and_then(cross_resolve)
+                    .is_none(),
+                min_cross,
+                max_cross,
+                align_self: s.align_self,
+            });
+        }
+        let mut plan = resolve_main_with_budget(&config, &inputs, self.layout_work.get());
+        let main_work = plan.work;
+        // Cross sizing is a bounded linear pass. Reserve its visits before
+        // recursively measuring children so suspended ancestors cannot perform
+        // unpaid numeric work after a descendant exhausts the shared budget.
+        let cross_reserve = plan.items.len() * 5;
+        let remaining = self.layout_work.get();
+        debug_assert!(main_work + cross_reserve <= remaining);
+        self.layout_work
+            .set(remaining.saturating_sub(main_work + cross_reserve));
+        let mut cross = Vec::new();
+        for (i, &node) in nodes.iter().take(plan.items.len()).enumerate() {
+            let s = &self.styles[node];
+            let sizes = if row {
+                crate::sizing::IntrinsicSizes::default()
+            } else {
+                self.intrinsic.content(node)
+            };
+            let natural_width = sizes
+                .max_content
+                .min((width - inputs[i].cross_inset).max(0.0))
+                .max(sizes.min_content);
+            let forced = SizeOverride {
+                width: if row {
+                    Some(plan.items[i].main_size)
+                } else {
+                    s.width
+                        .and_then(|v| {
+                            crate::sizing::resolve_content_size(
+                                sizes,
+                                v,
+                                crate::sizing::AvailableSize::Definite(width),
+                                inputs[i].cross_inset,
+                                s.box_sizing,
+                            )
+                        })
+                        .or(Some(natural_width))
+                },
+                height: if row {
+                    None
+                } else {
+                    Some(plan.items[i].main_size)
+                },
+                suppress_margins: true,
+                indefinite_height: !row && !flex_main_height_is_definite(s, percentage_height),
+            };
+            let align = if s.align_self == crate::style::Alignment::Auto {
+                style.align_items
+            } else {
+                s.align_self
+            };
+            let known_cross = if row {
+                s.height
+                    .and_then(|v| v.resolve_indefinite(percentage_height))
+                    .map(|v| content_size(v, inputs[i].cross_inset, s.box_sizing))
+            } else {
+                forced.width
+            };
+            let measurement = if align != crate::style::Alignment::Baseline
+                && let Some(cross) = known_cross
+            {
+                let border =
+                    crate::sizing::constrain(cross, Some(inputs[i].min_cross), inputs[i].max_cross)
+                        + inputs[i].cross_inset;
+                if row {
+                    MeasureResult {
+                        height: border,
+                        ..MeasureResult::default()
+                    }
+                } else {
+                    MeasureResult {
+                        width: border,
+                        ..MeasureResult::default()
+                    }
+                }
+            } else {
+                self.measure_item(node, width, percentage_height, forced, depth)
+            };
+            cross.push(CrossMeasurement {
+                border_size: if row {
+                    measurement.height
+                } else {
+                    measurement.width
+                },
+                baseline: if row { measurement.baseline } else { None },
+            });
+        }
+        resolve_cross(&config, &inputs, &cross, &mut plan);
+        self.truncated |= plan.truncated;
+        let cross_work = plan.work - main_work;
+        debug_assert!(cross_work <= cross_reserve);
+        self.layout_work
+            .set(self.layout_work.get() + cross_reserve.saturating_sub(cross_work));
+        for &i in &plan.order {
+            let position = &plan.items[i];
+            let (ix, iy, iw, ih) = if row {
+                (
+                    position.main_position,
+                    position.cross_position,
+                    position.main_size,
+                    position.cross_size,
+                )
+            } else {
+                (
+                    position.cross_position,
+                    position.main_position,
+                    position.cross_size,
+                    position.main_size,
+                )
+            };
+            let s = &self.styles[nodes[i]];
+            let align = if s.align_self == crate::style::Alignment::Auto {
+                style.align_items
+            } else {
+                s.align_self
+            };
+            let definite_height = if row {
+                s.height
+                    .and_then(|value| value.resolve_indefinite(percentage_height))
+                    .is_some()
+                    || (inputs[i].cross_auto
+                        && align == crate::style::Alignment::Stretch
+                        && inputs[i].cross_margin.iter().all(Option::is_some))
+            } else {
+                flex_main_height_is_definite(s, percentage_height)
+            };
+            self.lay_out_item(
+                nodes[i],
+                (x + ix, y + iy),
+                width,
+                percentage_height,
+                SizeOverride {
+                    width: Some(iw),
+                    height: Some(ih),
+                    suppress_margins: true,
+                    indefinite_height: !definite_height,
+                },
+                depth,
+            );
+        }
+        if row { plan.cross_size } else { plan.main_size }
+    }
+}
+
+/// Flexbox 1 §9.8: a definite main container or definite flex basis makes
+/// post-flexing main sizes definite. An auto basis in an auto-height container
+/// retains an unresolved percentage basis even when min-height gives it space.
+fn flex_main_height_is_definite(style: &ComputedStyle, containing: Option<f32>) -> bool {
+    containing.is_some()
+        || if matches!(style.flex_basis, Length::Auto) {
+            style
+                .height
+                .and_then(|value| value.resolve_indefinite(containing))
+                .is_some()
+        } else {
+            style.flex_basis.resolve_indefinite(containing).is_some()
+        }
 }
 
 fn list_markers(document: &Document, styles: &[ComputedStyle]) -> Vec<Option<String>> {
@@ -1867,6 +2508,24 @@ pub fn layout_with_images(
     images: &[Option<ImageSource>],
     viewport_width: f32,
 ) -> Scene {
+    layout_with_images_and_viewport(
+        document,
+        styles,
+        images,
+        crate::values::Viewport {
+            width: viewport_width,
+            height: None,
+        },
+    )
+}
+
+pub fn layout_with_images_and_viewport(
+    document: &Document,
+    styles: &[ComputedStyle],
+    images: &[Option<ImageSource>],
+    viewport: crate::values::Viewport,
+) -> Scene {
+    let viewport_width = viewport.width;
     let viewport_width = if viewport_width.is_finite() {
         viewport_width.clamp(1.0, 16_384.0)
     } else {
@@ -1891,16 +2550,66 @@ pub fn layout_with_images(
         lines: 0,
         truncated: false,
         budget: std::rc::Rc::new(std::cell::Cell::new(MAX_ITEMS)),
-        intrinsic_text_widths: Rc::new(RefCell::new(vec![None; document.nodes.len()])),
+        intrinsic: Rc::new(crate::intrinsic::IntrinsicCache::new(
+            document, styles, images,
+        )),
+        measure_only: false,
+        measure_budget: Rc::new(Cell::new(600_000)),
+        measurements: Rc::new(RefCell::new(HashMap::new())),
+        layout_override: None,
+        layout_work: Rc::new(Cell::new(8_000_000)),
+        viewport_height: viewport
+            .height
+            .filter(|height| height.is_finite())
+            .map(|height| height.clamp(1.0, 16_384.0)),
+        first_flow_baseline: None,
     };
-    let flow_height = builder.children(0, 0.0, 0.0, viewport_width, None, 0);
+    let flow_height = builder.children(
+        0,
+        0.0,
+        0.0,
+        viewport_width,
+        crate::sizing::AxisSpace::new(builder.viewport_height, builder.viewport_height),
+        0,
+    );
     let normal_end = builder.primitives.len();
     builder.positioned(viewport_width);
-    let painted_height = builder
+    let mut painted_height = builder
         .boxes
         .iter()
         .map(|item| item.y + item.height)
         .fold(0.0, f32::max);
+    let mut clip_bottoms: Vec<f32> = Vec::new();
+    for primitive in &builder.primitives {
+        match primitive {
+            Primitive::ClipStart { y, height, .. } => {
+                let bottom = y + height;
+                clip_bottoms.push(
+                    clip_bottoms
+                        .last()
+                        .copied()
+                        .map_or(bottom, |old| old.min(bottom)),
+                );
+            }
+            Primitive::ClipEnd => {
+                clip_bottoms.pop();
+            }
+            Primitive::DecoratedBox {
+                y, height, shadows, ..
+            } => {
+                for shadow in shadows {
+                    let bottom = y + height + shadow.offset_y + shadow.spread + shadow.blur * 1.5;
+                    painted_height = painted_height.max(
+                        clip_bottoms
+                            .last()
+                            .copied()
+                            .map_or(bottom, |clip| bottom.min(clip)),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
     let primitives = crate::stacking::order(
         builder.primitives,
         &builder.paint_groups,
@@ -1942,7 +2651,7 @@ pub fn layout_with_images(
         primitives,
         runs: builder.runs,
         line_boxes: builder.line_boxes,
-        truncated: builder.truncated,
+        truncated: builder.truncated || builder.intrinsic.truncated.get(),
     }
 }
 

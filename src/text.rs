@@ -82,6 +82,49 @@ pub struct ResolvedRun {
     pub glyphs: Vec<Glyph>,
 }
 
+/// Advances at existing grapheme boundaries, derived from the shaped run.
+/// Ligature advances are shared across their source graphemes for emergency
+/// break estimation; placement reshapes a chosen fragment, as before.
+pub fn grapheme_advances(run: &ResolvedRun) -> Vec<(usize, f32)> {
+    let graphemes: Vec<_> = run.content.grapheme_indices(true).map(|(i, _)| i).collect();
+    let mut advances = vec![0.0; graphemes.len()];
+    let mut clusters: Vec<_> = run
+        .glyphs
+        .iter()
+        .map(|glyph| (glyph.cluster, glyph.advance))
+        .collect();
+    clusters.sort_by_key(|&(cluster, _)| cluster);
+    let mut distinct = 0;
+    for read in 0..clusters.len() {
+        let (cluster, advance) = clusters[read];
+        if distinct == 0 || clusters[distinct - 1].0 != cluster {
+            clusters[distinct] = (cluster, 0.0);
+            distinct += 1;
+        }
+        clusters[distinct - 1].1 += advance;
+    }
+    clusters.truncate(distinct);
+    for (i, &(cluster, advance)) in clusters.iter().enumerate() {
+        let start = graphemes
+            .partition_point(|&offset| offset <= cluster)
+            .saturating_sub(1);
+        let next = clusters
+            .get(i + 1)
+            .map_or(run.content.len(), |&(offset, _)| offset);
+        let end = graphemes
+            .partition_point(|&offset| offset < next)
+            .max(start + 1)
+            .min(graphemes.len());
+        if end > start {
+            let share = advance / (end - start) as f32;
+            for value in &mut advances[start..end] {
+                *value += share;
+            }
+        }
+    }
+    graphemes.into_iter().zip(advances).collect()
+}
+
 struct FontData {
     shape_font: FontRef<'static>,
     shaper: ShaperData,

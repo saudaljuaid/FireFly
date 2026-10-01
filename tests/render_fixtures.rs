@@ -100,7 +100,7 @@ fn computed_units_alpha_inheritance_and_definite_height() {
 
 #[test]
 fn min_max_constraints_and_invalid_values_are_predictable() {
-    let source = "<style>html,body{margin:0} .box{width:300px;width:calc(10px);max-width:150px;min-width:100px;height:10px;min-height:20px;max-height:30px;margin:0 auto;background:blue}</style><div class=box></div>";
+    let source = "<style>html,body{margin:0} .box{width:300px;width:calc(10px + red);max-width:150px;min-width:100px;height:10px;min-height:20px;max-height:30px;margin:0 auto;background:blue}</style><div class=box></div>";
     let (document, scene) = scene(source, 400.0);
     let box_id = element(&document, "box");
     assert_eq!(boxes(&scene, box_id)[0], (125.0, 0.0, 150.0, 20.0));

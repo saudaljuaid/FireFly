@@ -1,16 +1,22 @@
 pub mod css;
 pub mod dom;
+pub mod effects;
+pub mod flex;
+pub mod grid;
 pub mod html;
+pub mod intrinsic;
 pub mod layout;
 pub mod network;
 pub mod paint;
 mod paragraph;
 pub mod position;
 pub mod resource;
+pub mod sizing;
 pub mod stacking;
 pub mod style;
 pub mod text;
 pub mod url;
+pub mod values;
 
 use std::fmt;
 use std::fs;
@@ -20,6 +26,7 @@ use dom::{Document, NodeKind};
 use layout::ImageSource;
 use network::Client;
 use url::Url;
+pub use values::Viewport;
 
 const MAX_COMBINED_CSS_BYTES: usize = 4 * 1024 * 1024;
 
@@ -37,8 +44,20 @@ fn append_stylesheet(css_source: &mut String, source: &str) -> bool {
     true
 }
 
+#[cfg(test)]
 fn inline_stylesheets(document: &Document) -> String {
+    inline_stylesheets_with_viewport(document, Viewport::default()).0
+}
+
+fn media_active(element: &dom::Element, viewport: Viewport) -> bool {
+    element
+        .attribute("media")
+        .is_none_or(|media| css::parse_media_query_list(media).matches(viewport.width))
+}
+
+fn inline_stylesheets_with_viewport(document: &Document, viewport: Viewport) -> (String, bool) {
     let mut source = String::new();
+    let mut truncated = false;
     for id in document.preorder() {
         if in_template_content(document, id)
             || !document
@@ -47,13 +66,16 @@ fn inline_stylesheets(document: &Document) -> String {
         {
             continue;
         }
+        if !media_active(document.element(id).unwrap(), viewport) {
+            continue;
+        }
         for &child in &document.nodes[id].children {
             if let NodeKind::Text(text) = &document.nodes[child].kind {
-                append_stylesheet(&mut source, text);
+                truncated |= !append_stylesheet(&mut source, text);
             }
         }
     }
-    source
+    (source, truncated)
 }
 
 #[derive(Debug)]
@@ -82,17 +104,31 @@ impl From<std::io::Error> for Error {
 }
 
 pub fn render(source: &str, viewport_width: f32) -> Result<String, Error> {
+    render_with_viewport(
+        source,
+        Viewport {
+            width: viewport_width,
+            height: None,
+        },
+    )
+}
+
+/// Render with a static viewport environment. Height units require `height`;
+/// the document remains free to extend beyond that screen height.
+pub fn render_with_viewport(source: &str, viewport: Viewport) -> Result<String, Error> {
     if source.len() > 16 * 1024 * 1024 {
         return Err(Error::InvalidInput("HTML input exceeds 16 MiB".into()));
     }
-    validate_width(viewport_width)?;
+    validate_viewport(viewport)?;
     let document = html::parse(source)?;
-    let sheet = css::parse(&inline_stylesheets(&document));
+    let (source, truncated) = inline_stylesheets_with_viewport(&document, viewport);
+    let mut sheet = css::parse(&source);
+    sheet.truncated |= truncated;
     Ok(render_document(
         &document,
         &sheet,
         &vec![None; document.nodes.len()],
-        viewport_width,
+        viewport,
     ))
 }
 
@@ -103,21 +139,48 @@ pub fn render_bytes(
     transport_content_type: Option<&str>,
     viewport_width: f32,
 ) -> Result<String, Error> {
-    validate_width(viewport_width)?;
+    render_bytes_with_viewport(
+        source,
+        transport_content_type,
+        Viewport {
+            width: viewport_width,
+            height: None,
+        },
+    )
+}
+
+/// The additive byte API keeps final-response encoding metadata and the same
+/// HTML limits while supplying explicit viewport units.
+pub fn render_bytes_with_viewport(
+    source: &[u8],
+    transport_content_type: Option<&str>,
+    viewport: Viewport,
+) -> Result<String, Error> {
+    validate_viewport(viewport)?;
     let document = html::parse_bytes(source, transport_content_type)?;
-    let sheet = css::parse(&inline_stylesheets(&document));
+    let (source, truncated) = inline_stylesheets_with_viewport(&document, viewport);
+    let mut sheet = css::parse(&source);
+    sheet.truncated |= truncated;
     Ok(render_document(
         &document,
         &sheet,
         &vec![None; document.nodes.len()],
-        viewport_width,
+        viewport,
     ))
 }
 
-fn validate_width(viewport_width: f32) -> Result<(), Error> {
-    if !viewport_width.is_finite() || viewport_width < 1.0 || viewport_width > 16_384.0 {
+fn validate_viewport(viewport: Viewport) -> Result<(), Error> {
+    if !viewport.width.is_finite() || viewport.width < 1.0 || viewport.width > 16_384.0 {
         return Err(Error::InvalidInput(
             "viewport width must be between 1 and 16384 pixels".into(),
+        ));
+    }
+    if viewport
+        .height
+        .is_some_and(|height| !height.is_finite() || !(1.0..=16_384.0).contains(&height))
+    {
+        return Err(Error::InvalidInput(
+            "viewport height must be between 1 and 16384 pixels".into(),
         ));
     }
     Ok(())
@@ -127,10 +190,12 @@ fn render_document(
     document: &Document,
     sheet: &css::Stylesheet,
     images: &[Option<ImageSource>],
-    viewport_width: f32,
+    viewport: Viewport,
 ) -> String {
-    let styles = style::compute(document, sheet);
-    let scene = layout::layout_with_images(document, &styles, images, viewport_width);
+    let computed = style::compute_with_status(document, sheet, viewport);
+    let mut scene =
+        layout::layout_with_images_and_viewport(document, &computed.styles, images, viewport);
+    scene.truncated |= computed.truncated;
     paint::to_svg(&scene)
 }
 
@@ -170,7 +235,20 @@ fn load_images(
 
 /// Render a local HTML file, resolving image paths against its directory.
 pub fn render_file(path: &Path, viewport_width: f32) -> Result<(String, Vec<String>), Error> {
-    validate_width(viewport_width)?;
+    render_file_with_viewport(
+        path,
+        Viewport {
+            width: viewport_width,
+            height: None,
+        },
+    )
+}
+
+pub fn render_file_with_viewport(
+    path: &Path,
+    viewport: Viewport,
+) -> Result<(String, Vec<String>), Error> {
+    validate_viewport(viewport)?;
     if fs::metadata(path)?.len() > 16 * 1024 * 1024 {
         return Err(Error::InvalidInput("HTML input exceeds 16 MiB".into()));
     }
@@ -188,6 +266,9 @@ pub fn render_file(path: &Path, viewport_width: f32) -> Result<(String, Vec<Stri
         let NodeKind::Element(element) = &node.kind else {
             continue;
         };
+        if matches!(element.tag.as_str(), "style" | "link") && !media_active(element, viewport) {
+            continue;
+        }
         if element.tag == "style" {
             for &child in &node.children {
                 if let NodeKind::Text(text) = &document.nodes[child].kind
@@ -237,7 +318,10 @@ pub fn render_file(path: &Path, viewport_width: f32) -> Result<(String, Vec<Stri
             }
         }
     }
-    let sheet = css::parse(&css_source);
+    let mut sheet = css::parse(&css_source);
+    sheet.truncated |= warnings
+        .iter()
+        .any(|warning| warning.contains("stylesheet limit reached"));
     let images = load_images(
         &document,
         |src| {
@@ -258,7 +342,7 @@ pub fn render_file(path: &Path, viewport_width: f32) -> Result<(String, Vec<Stri
         &mut warnings,
     );
     Ok((
-        render_document(&document, &sheet, &images, viewport_width),
+        render_document(&document, &sheet, &images, viewport),
         warnings,
     ))
 }
@@ -281,7 +365,17 @@ pub struct LoadedPage {
 }
 
 pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error> {
-    validate_width(viewport_width)?;
+    render_url_with_viewport(
+        input,
+        Viewport {
+            width: viewport_width,
+            height: None,
+        },
+    )
+}
+
+pub fn render_url_with_viewport(input: &str, viewport: Viewport) -> Result<LoadedPage, Error> {
+    validate_viewport(viewport)?;
     let client = Client::new();
     let response = client.fetch(&Url::parse(input)?)?;
     if let Some(content_type) = response.header("content-type") {
@@ -321,6 +415,9 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
         let NodeKind::Element(element) = &node.kind else {
             continue;
         };
+        if matches!(element.tag.as_str(), "style" | "link") && !media_active(element, viewport) {
+            continue;
+        }
         match element.tag.as_str() {
             "style" => {
                 for &child in &node.children {
@@ -339,11 +436,6 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
                         .any(|token| token.eq_ignore_ascii_case("stylesheet"))
                 }) =>
             {
-                if element.attribute("media").is_some_and(|media| {
-                    !matches!(media.to_ascii_lowercase().as_str(), "all" | "screen")
-                }) {
-                    continue;
-                }
                 let Some(href) = element.attribute("href") else {
                     continue;
                 };
@@ -383,7 +475,10 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
             _ => {}
         }
     }
-    let sheet = css::parse(&css_source);
+    let mut sheet = css::parse(&css_source);
+    sheet.truncated |= warnings
+        .iter()
+        .any(|warning| warning.contains("stylesheet limit reached"));
     let images = load_images(
         &document,
         |src| {
@@ -395,7 +490,7 @@ pub fn render_url(input: &str, viewport_width: f32) -> Result<LoadedPage, Error>
     );
     Ok(LoadedPage {
         url: response.final_url,
-        svg: render_document(&document, &sheet, &images, viewport_width),
+        svg: render_document(&document, &sheet, &images, viewport),
         warnings,
         stylesheets,
     })

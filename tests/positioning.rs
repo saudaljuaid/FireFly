@@ -68,6 +68,13 @@ fn finite(scene: &Scene) {
                 height,
                 ..
             }
+            | Primitive::DecoratedBox {
+                x,
+                y,
+                width,
+                height,
+                ..
+            }
             | Primitive::Image {
                 x,
                 y,

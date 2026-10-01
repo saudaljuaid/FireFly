@@ -81,11 +81,7 @@ fn dimension(value: f32) -> f32 {
 }
 
 fn resolve(length: Length, base: Option<f32>) -> Option<f32> {
-    let value = match length {
-        Length::Px(value) => value,
-        Length::Percent(value) => value * base? / 100.0,
-        Length::Auto => return None,
-    };
+    let value = length.resolve_indefinite(base)?;
     value.is_finite().then_some(coordinate(value))
 }
 
@@ -169,13 +165,26 @@ fn constrain(
     dimension(value)
 }
 
-/// Resolve explicit sizes and opposing-inset stretch. One-sided/all-auto
-/// widths use a bounded preferred-width shrink approximation supplied by the
-/// existing intrinsic measurer; heights with auto insets remain content-sized.
+/// Backward-compatible preferred-width entry point. Engine layout supplies both
+/// intrinsic contributions through `absolute_size_with_intrinsic`.
 pub fn absolute_size(
     style: &ComputedStyle,
     cb: ContainingBlock,
     intrinsic_width: f32,
+) -> AbsoluteSize {
+    absolute_size_with_intrinsic(
+        style,
+        cb,
+        crate::sizing::IntrinsicSizes::new(0.0, intrinsic_width),
+    )
+}
+
+/// Resolve content-box intrinsic keywords, shrink-to-fit, explicit sizes and
+/// opposing-inset stretch from the same shared contributions as Flex/Grid.
+pub fn absolute_size_with_intrinsic(
+    style: &ComputedStyle,
+    cb: ContainingBlock,
+    intrinsic: crate::sizing::IntrinsicSizes,
 ) -> AbsoluteSize {
     let (width, height) = dimensions(cb);
     let (horizontal, vertical) = box_insets(style, width);
@@ -190,22 +199,37 @@ pub fn absolute_size(
     );
     let preferred = style
         .width
-        .and_then(|length| resolve(length, Some(width)))
-        .map(|value| content_size(value, horizontal, style.box_sizing))
+        .and_then(|length| {
+            crate::sizing::resolve_content_size(
+                intrinsic,
+                length,
+                crate::sizing::AvailableSize::Definite(width),
+                horizontal,
+                style.box_sizing,
+            )
+        })
         .unwrap_or_else(|| {
             if left.is_some() && right.is_some() {
                 available_content
             } else {
-                dimension(intrinsic_width).min(available_content)
+                intrinsic.shrink_to_fit(available_content)
             }
         });
-    let content_width = Some(constrain(
+    let horizontal_constraint = |value: Option<Length>| {
+        value.and_then(|length| {
+            crate::sizing::resolve_content_size(
+                intrinsic,
+                length,
+                crate::sizing::AvailableSize::Definite(width),
+                horizontal,
+                style.box_sizing,
+            )
+        })
+    };
+    let content_width = Some(crate::sizing::constrain(
         preferred,
-        style.min_width,
-        style.max_width,
-        Some(width),
-        horizontal,
-        style.box_sizing,
+        horizontal_constraint(style.min_width),
+        horizontal_constraint(style.max_width),
     ));
     let content_height = style
         .height

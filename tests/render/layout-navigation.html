@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>Responsive navigation geometry</title>
+<!-- Original engineering fixture: grow/shrink, long labels, wrapping, order,
+     baseline, RTL content, auto margins, and a positioned label in a flex item. -->
+<style>
+html,body{margin:0}body{font-size:16px;line-height:24px;color:#233340;background:#f5f6f4}
+header{display:flex;align-items:baseline;gap:16px;padding:18px 20px;background:#253f48;color:white}
+.brand{font-size:24px;font-weight:bold;flex:0 0 auto}.links{display:flex;flex:1 1 auto;min-width:0;flex-wrap:wrap;gap:6px 10px;align-items:baseline}
+.link{display:block;padding:4px 6px;border-width:0 0 1px;border-style:solid;border-color:#7c969b;font-size:14px;line-height:20px}.long{flex:1 1 180px;min-width:0}
+.group{display:flex;gap:8px;margin-left:auto;align-items:center;font-size:13px;line-height:20px}.status{position:relative;padding:4px 38px 4px 6px;background:#36575f;border-radius:4px}.label{position:absolute;top:3px;right:4px;font-size:10px;line-height:16px;color:#153d30;background:#cde2d1;padding:1px 3px;border-radius:2px}
+main{max-width:860px;padding:24px 20px;margin:0 auto}h1{font-size:30px;line-height:38px;margin:0 0 12px}p{margin:0 0 12px}.strip{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px;border:1px solid #bbc9c7;background:white}.small{font-size:12px;line-height:18px}.grow{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}.rtl{direction:rtl;background:#e1ece6;padding:3px 6px}
+@media(max-width:600px){header{flex-direction:column;align-items:stretch;gap:10px}.group{margin-left:0}.links{flex-grow:0}.long{flex-basis:160px}}
+</style>
+<header id="navigation"><div class="brand">Northline Archive</div><nav class="links" id="links"><span class="link">Collections</span><span class="link long">Research notes and conservation records</span><span class="link">Reading room</span></nav><div class="group"><span>EN / AR</span><span class="status">Index<span class="label">NEW</span></span></div></header>
+<main><h1>Navigation adapts at 600 pixels</h1><p>The long research label shares the available width. The language group keeps its own size, while the navigation wraps.</p><div class="strip"><span class="small">Reference</span><span class="grow">https://archive.example.test/collections/manuscripts/conservation-notes</span><span class="rtl">العربية ١٢٣</span></div><p class="small">A nonbreaking pair: volume&nbsp;three. Decomposed accent: café. CJK label: 文献目录.</p></main>

@@ -16,7 +16,7 @@ cargo test --locked
 
 The parser follows the [WHATWG HTML Standard's tokenization and tree-construction algorithms](https://html.spec.whatwg.org/multipage/parsing.html). Its default scripting mode is disabled. `parse_with_scripting(input, true)` selects script-enabled parsing rules, such as `noscript` handling, but does not execute scripts.
 
-This milestone starts from `main` commit `ca6b486`. Its full locked suite passed before these changes: 7,028 exact tokenizer sequences, 1,739 exact document trees, 206 exact fragment trees, eight exact script-on trees, and 7,028 exact tokenizer error lists. The initial historical WPT error inventory was 518/263/958 for documents, 38/14/154 for fragments, and 8/0/0 for script-on cases (pass/fail/unrepresentable).
+The historical parser milestone started from `main` commit `ca6b486`. Its full locked suite passed before those parser changes: 7,028 exact tokenizer sequences, 1,739 exact document trees, 206 exact fragment trees, eight exact script-on trees, and 7,028 exact tokenizer error lists. The initial historical WPT error inventory was 518/263/958 for documents, 38/14/154 for fragments, and 8/0/0 for script-on cases (pass/fail/unrepresentable). The current layout milestone's fresh baseline and final results are recorded below.
 
 The tokenizer implements the full 2,231-entry named character-reference table, longest-match and attribute-context rules, numeric references and control-code replacement, data/RCDATA/RAWTEXT/PLAINTEXT, script-data escaped and double-escaped states, foreign-content CDATA, comments, DOCTYPE identifiers and quirks recovery, attributes, end-tag matching, and EOF recovery. It normalizes CR and CRLF to LF. The current tokenizer recognizes processing instructions; `Tokenizer::new_legacy_html5lib` exposes the older bogus-comment behavior needed to compare the historical html5lib tokenizer corpus without changing its expected tokens.
 
@@ -206,29 +206,64 @@ The tokenizer error inventory compares the original html5lib error lists with `T
 
 Phos reports exact tokenizer errors for the representable pinned html5lib cases. Tree diagnostics now cover recovery across insertion modes, foreign content, templates, adoption agency, reprocessing, EOF, and fragments, but the WPT inventory above still contains exact-list and position mismatches and historical expectations that cannot be compared one-to-one. The byte frontend supports a single in-tree late-meta restart with original bytes; it does not implement statistical or locale-sensitive fallback detection, and its documented fallback is UTF-8. The fragment API receives one context element, so it cannot infer a `form` ancestor. The `&str` tokenizer cannot represent unpaired UTF-16 surrogates. Phos does not execute scripts or provide live DOM behavior such as form association and dynamic `selectedcontent` updates. Full HTML conformance has not been established. The next parser step is to reconcile the remaining representable WPT error-list mismatches by individual recovery branch and source position.
 
-Phos now has bounded CSS declaration scanning, explicit author cascade ordering,
-block/inline/inline-block flow, rounded backgrounds/borders, clipping, and bounded
-PNG/JPEG loading. Text layout and SVG painting share resolved HarfRust glyph
-runs, fixed DejaVu/CJK fallback, Unicode line opportunities, grapheme boundaries,
-and a tested horizontal Arabic/Hebrew bidi subset. Baselines, sliced inline
-decorations, basic list markers, relative/absolute positioning, and local
-z-index paint phases support ordinary static pages. This does not establish full
-CSS, Unicode, font, or browser conformance. The
-[rendering matrix, limits, fixtures, and examples](RENDERING.md) records the exact
-subset, outline-SVG text-selection tradeoff, physical-left RTL list-marker
-limitation, fragmented-inline containing/stacking gaps, and remaining parser
-diagnostics separately.
+Phos now shares intrinsic content/outer sizing across ordinary flow,
+Flexbox, Grid and positioned boxes. Actual Flexbox freeze/scaled-shrink,
+wrapping/alignment and bounded Grid placement/intrinsic/span/fraction phases
+support restrained static UI structures. Width media, viewport lengths and
+typed calculations use one cascade and one static viewport. Linear gradients,
+real Gaussian outer shadows, circular corners, shared text/bidi/baselines,
+images, padded overlays and local clipped paint ordering are integrated.
+This does not establish whole-specification conformance. Detailed contracts
+and exact limitations are linked from [RENDERING.md](RENDERING.md).
 
-The current source inventory has 21 rendering HTML fixtures, one PNG, and one
-CSS file; pinned parser corpus counts above remain unchanged. The final local
-locked suite passes 167 tests, zero failed, three intentionally ignored
-diagnostics; 71 integration checks cover rendering/text/positioning. Formatting,
-Clippy with warnings denied, and diff checks pass. The GitHub workflow runs the
-same checks, with its completed run linked in the delivery report. Local
-Clippy/tests use Linux Rust under WSL because the native Windows MSVC linker is
-not installed. The next concrete Phos engine step is pinned WPT CSS coverage
-for the implemented inline/positioning subset, then fragment containing blocks
-and positioned descendant promotion through non-stacking ancestors.
+The fresh fetched parent was `a89508a053c5e4260ac2ee60927690718249cf58`, with
+no intervening commits. Its completed CI and local baseline were 167 passed,
+zero failed, three intentionally ignored. No parser corpus, network/URL stack,
+resource policy, dependency/font or Scarlite-UI source was changed.
+
+Current rendering fixture inventory: **28 HTML, four PNG, one CSS**.
+Final local locked-suite results: **367 passed, zero failed, three intentionally
+ignored**. Formatting, all-target Clippy with warnings denied, and diff checks
+also pass. The suite contains **119 library tests and 248 integration checks**,
+including **199 rendering/sizing/responsive checks**. All focused regressions
+are included in the locked suite; binary and documentation test groups contain
+zero tests.
+
+| Locked integration group | Passed | Failed | Ignored |
+| --- | ---: | ---: | ---: |
+| Byte input | 10 | 0 | 0 |
+| Effects | 16 | 0 | 0 |
+| Flexbox layout | 35 | 0 | 0 |
+| Grid layout | 31 | 0 | 0 |
+| Intrinsic sizing | 13 | 0 | 0 |
+| Layout bounds/interactions | 13 | 0 | 0 |
+| Line details | 8 | 0 | 0 |
+| Modern fixtures | 7 | 0 | 0 |
+| Parse errors | 6 | 0 | 0 |
+| Positioning | 21 | 0 | 0 |
+| Rendering fixtures | 16 | 0 | 0 |
+| Responsive CSS | 13 | 0 | 0 |
+| Text boundaries | 9 | 0 | 0 |
+| Text layout | 17 | 0 | 0 |
+| Tree construction | 22 | 0 | 0 |
+| Upstream errors | 2 | 0 | 0 |
+| Upstream tokenizer | 2 | 0 | 1 |
+| Upstream trees | 7 | 0 | 2 |
+| **Total integration** | **248** | **0** | **3** |
+
+The ignored diagnostics remain `inventory_upstream_tokenizer`,
+`inventory_upstream_document_trees`, and `inventory_upstream_fragments`.
+Corpus files, case counts and expectations above are unchanged. Completed
+pushed CI results are recorded after delivery verification; a pending run is
+not a verified result. Local checks use Linux Rust 1.98.1 under WSL; Windows
+MSVC lacks its linker.
+Browser/performance evidence and honest differences are in
+[BROWSER_COMPARISON.md](BROWSER_COMPARISON.md).
+
+The next concrete engine step is pinned CSS interoperability evidence for this
+subset, Grid row-dependent intrinsic reruns and transferred replaced minima,
+then fragment containing blocks and paint promotion preserving clips. The next
+parser step remains the independent diagnostic reconciliation described above.
 
 ## Repository map
 
@@ -238,10 +273,13 @@ and positioned descendant promotion through non-stacking ancestors.
 | `src/dom.rs` | Document arena and relationships |
 | `src/network.rs`, `src/url.rs` | HTTP(S) loading and URL resolution |
 | `src/css.rs`, `src/style.rs` | CSS parsing and computed styles |
+| `src/sizing.rs`, `src/intrinsic.rs` | Shared available spaces, content/outer contributions and pure cached measurement |
+| `src/flex.rs`, `src/grid.rs`, `src/layout/grid_layout.rs` | Bounded numeric layout and formatting-context integration |
+| `src/values.rs`, `src/effects.rs` | Typed calculations/viewport environment and gradients/shadows |
 | `src/layout.rs`, `src/paragraph.rs`, `src/text.rs` | Resolved text, Unicode/bidi, line/box geometry, shaping and fallback |
 | `src/position.rs`, `src/stacking.rs`, `src/paint.rs` | Positioned rectangles, local paint groups, glyph-outline SVG |
 | `src/resource.rs` | PNG/JPEG validation and limits |
-| `tests/render`, `tests/render_fixtures.rs`, `tests/text_layout.rs`, `tests/text_boundaries.rs`, `tests/line_details.rs`, `tests/positioning.rs` | Original rendering sources and exact/bounded geometry checks |
+| `tests/render`, `tests/render_fixtures.rs`, `tests/text_layout.rs`, `tests/text_boundaries.rs`, `tests/line_details.rs`, `tests/positioning.rs`, `tests/flex_layout.rs`, `tests/grid_layout.rs`, `tests/intrinsic_sizing.rs`, `tests/responsive.rs`, `tests/modern_fixtures.rs`, `tests/effects.rs`, `tests/layout_bounds.rs` | Original rendering sources and exact/bounded geometry checks |
 | `assets/fonts` | Pinned redistributable DejaVu/CJK faces, licenses and subset reproduction |
 | `src/main.rs` | `scarlite` CLI |
 | `examples/welcome.html` | Small sample document |

@@ -6,7 +6,29 @@ pub enum Display {
     Block,
     Inline,
     InlineBlock,
+    Flex,
+    InlineFlex,
+    Grid,
+    InlineGrid,
     None,
+}
+
+impl Display {
+    pub fn is_block_level(self) -> bool {
+        matches!(self, Self::Block | Self::Flex | Self::Grid)
+    }
+    pub fn is_atomic(self) -> bool {
+        matches!(
+            self,
+            Self::InlineBlock | Self::InlineFlex | Self::InlineGrid
+        )
+    }
+    pub fn is_flex(self) -> bool {
+        matches!(self, Self::Flex | Self::InlineFlex)
+    }
+    pub fn is_grid(self) -> bool {
+        matches!(self, Self::Grid | Self::InlineGrid)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +135,14 @@ impl Color {
 pub enum Length {
     Px(f32),
     Percent(f32),
+    Calc {
+        px: f32,
+        percent: f32,
+        percentage: bool,
+        nonnegative: bool,
+    },
+    MinContent,
+    MaxContent,
     Auto,
 }
 
@@ -124,11 +154,60 @@ impl Default for Length {
 
 impl Length {
     pub fn resolve(self, base: f32) -> Option<f32> {
+        self.resolve_indefinite(Some(base))
+    }
+    pub fn resolve_indefinite(self, base: Option<f32>) -> Option<f32> {
         match self {
             Self::Px(value) => Some(value),
-            Self::Percent(value) => Some(base * value / 100.0),
-            Self::Auto => None,
+            Self::Percent(value) => base.map(|base| base * value / 100.0),
+            Self::Calc {
+                px,
+                percent,
+                percentage,
+                nonnegative,
+            } => {
+                if percentage && base.is_none() {
+                    return None;
+                }
+                let value = px + base.unwrap_or(0.0) * percent / 100.0;
+                Some(if nonnegative { value.max(0.0) } else { value })
+            }
+            Self::Auto | Self::MinContent | Self::MaxContent => None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alignment {
+    Auto,
+    Start,
+    End,
+    FlexStart,
+    FlexEnd,
+    Center,
+    Stretch,
+    Baseline,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+impl Alignment {
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "auto" => Self::Auto,
+            "start" => Self::Start,
+            "end" => Self::End,
+            "flex-start" => Self::FlexStart,
+            "flex-end" => Self::FlexEnd,
+            "center" => Self::Center,
+            "stretch" | "normal" => Self::Stretch,
+            "baseline" | "first baseline" => Self::Baseline,
+            "space-between" => Self::SpaceBetween,
+            "space-around" => Self::SpaceAround,
+            "space-evenly" => Self::SpaceEvenly,
+            _ => return None,
+        })
     }
 }
 
@@ -244,15 +323,40 @@ impl Edges {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
     pub display: Display,
+    pub flex_direction: crate::flex::FlexDirection,
+    pub flex_wrap: crate::flex::FlexWrap,
+    pub flex_grow: f32,
+    pub flex_shrink: f32,
+    pub flex_basis: Length,
+    pub order: i32,
+    pub row_gap: Length,
+    pub column_gap: Length,
+    pub justify_content: Alignment,
+    pub align_content: Alignment,
+    pub align_items: Alignment,
+    pub align_self: Alignment,
+    pub justify_items: Alignment,
+    pub justify_self: Alignment,
+    pub grid_template_columns: Vec<crate::grid::Track>,
+    pub grid_template_rows: Vec<crate::grid::Track>,
+    pub grid_auto_columns: Vec<crate::grid::Track>,
+    pub grid_auto_rows: Vec<crate::grid::Track>,
+    pub grid_auto_flow: crate::grid::GridAutoFlow,
+    pub grid_column: crate::grid::GridLinePair,
+    pub grid_row: crate::grid::GridLinePair,
     pub position: Position,
     pub insets: Edges,
     pub z_index: Option<i32>,
     pub color: Color,
     pub background: Option<Color>,
+    pub background_gradient: Option<crate::effects::LinearGradient>,
+    pub box_shadows: Vec<crate::effects::BoxShadow>,
     pub font_size: f32,
     pub bold: bool,
     pub width: Option<Length>,
     pub height: Option<Length>,
+    pub width_declared: bool,
+    pub height_declared: bool,
     pub min_width: Option<Length>,
     pub max_width: Option<Length>,
     pub min_height: Option<Length>,
@@ -281,6 +385,27 @@ impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
             display: Display::Inline,
+            flex_direction: crate::flex::FlexDirection::Row,
+            flex_wrap: crate::flex::FlexWrap::NoWrap,
+            flex_grow: 0.0,
+            flex_shrink: 1.0,
+            flex_basis: Length::Auto,
+            order: 0,
+            row_gap: Length::Px(0.0),
+            column_gap: Length::Px(0.0),
+            justify_content: Alignment::Stretch,
+            align_content: Alignment::Stretch,
+            align_items: Alignment::Stretch,
+            align_self: Alignment::Auto,
+            justify_items: Alignment::Stretch,
+            justify_self: Alignment::Auto,
+            grid_template_columns: Vec::new(),
+            grid_template_rows: Vec::new(),
+            grid_auto_columns: Vec::new(),
+            grid_auto_rows: Vec::new(),
+            grid_auto_flow: crate::grid::GridAutoFlow::Row,
+            grid_column: crate::grid::GridLinePair::default(),
+            grid_row: crate::grid::GridLinePair::default(),
             position: Position::Static,
             insets: Edges {
                 top: Length::Auto,
@@ -291,10 +416,14 @@ impl Default for ComputedStyle {
             z_index: None,
             color: Color::BLACK,
             background: None,
+            background_gradient: None,
+            box_shadows: Vec::new(),
             font_size: 16.0,
             bold: false,
             width: None,
             height: None,
+            width_declared: false,
+            height_declared: false,
             min_width: None,
             max_width: None,
             min_height: None,
@@ -324,34 +453,70 @@ fn length(
     value: &str,
     em: f32,
     rem: f32,
+    viewport: crate::values::Viewport,
     allow_auto: bool,
     allow_negative: bool,
 ) -> Option<Length> {
-    let value = value.trim().to_ascii_lowercase();
-    if allow_auto && value == "auto" {
-        return Some(Length::Auto);
+    crate::values::parse_length(
+        value,
+        &crate::values::LengthContext {
+            em,
+            rem,
+            viewport_width: viewport.width,
+            viewport_height: viewport.height,
+        },
+        allow_auto,
+        allow_negative,
+    )
+}
+
+fn sizing_length(
+    value: &str,
+    parse: impl Fn(&str, bool, bool) -> Option<Length>,
+) -> Option<Length> {
+    match value {
+        "min-content" => Some(Length::MinContent),
+        "max-content" => Some(Length::MaxContent),
+        _ => parse(value, true, false),
     }
-    let (number, unit) = if let Some(number) = value.strip_suffix("rem") {
-        (number, "rem")
-    } else if let Some(number) = value.strip_suffix("em") {
-        (number, "em")
-    } else if let Some(number) = value.strip_suffix("px") {
-        (number, "px")
-    } else if let Some(number) = value.strip_suffix('%') {
-        (number, "%")
-    } else {
-        (value.as_str(), "")
+}
+
+fn flex_factor(value: &str) -> Option<f32> {
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite() && (0.0..=16_384.0).contains(value))
+}
+
+fn flex_shorthand(
+    value: &str,
+    parse: impl Fn(&str, bool, bool) -> Option<Length>,
+) -> Option<(f32, f32, Length)> {
+    match value {
+        "none" => return Some((0.0, 0.0, Length::Auto)),
+        "auto" => return Some((1.0, 1.0, Length::Auto)),
+        "initial" => return Some((0.0, 1.0, Length::Auto)),
+        _ => {}
+    }
+    let parts = crate::values::components(value)?;
+    let basis = |value| {
+        if value == "content" {
+            Some(Length::MaxContent)
+        } else {
+            sizing_length(value, &parse)
+        }
     };
-    let parsed: f32 = number.trim().parse().ok()?;
-    if !parsed.is_finite() || parsed.abs() > 16_384.0 || (!allow_negative && parsed < 0.0) {
-        return None;
-    }
-    match unit {
-        "rem" => Some(Length::Px(parsed * rem)),
-        "em" => Some(Length::Px(parsed * em)),
-        "%" => Some(Length::Percent(parsed)),
-        "px" => Some(Length::Px(parsed)),
-        "" if parsed == 0.0 => Some(Length::Px(0.0)),
+    match parts.as_slice() {
+        [a] => flex_factor(a)
+            .map(|grow| (grow, 1.0, Length::Percent(0.0)))
+            .or_else(|| basis(a).map(|basis| (1.0, 1.0, basis))),
+        [a, b] => {
+            let grow = flex_factor(a)?;
+            flex_factor(b)
+                .map(|shrink| (grow, shrink, Length::Percent(0.0)))
+                .or_else(|| basis(b).map(|basis| (grow, 1.0, basis)))
+        }
+        [a, b, c] => Some((flex_factor(a)?, flex_factor(b)?, basis(c)?)),
         _ => None,
     }
 }
@@ -361,22 +526,23 @@ fn apply_edges(
     property: &str,
     value: &str,
     prefix: &str,
-    units: (f32, f32),
+    units: (f32, f32, crate::values::Viewport),
     allowances: (bool, bool),
 ) {
-    let (em, rem) = units;
+    let (em, rem, viewport) = units;
     let (allow_auto, allow_negative) = allowances;
     if property == prefix {
-        let numbers: Option<Vec<_>> = value
-            .split_ascii_whitespace()
-            .map(|part| length(part, em, rem, allow_auto, allow_negative))
+        let numbers: Option<Vec<_>> = crate::values::components(value)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|part| length(part, em, rem, viewport, allow_auto, allow_negative))
             .collect();
         if let Some(parsed) = numbers.and_then(|numbers| Edges::shorthand(&numbers)) {
             *edges = parsed;
         }
         return;
     }
-    let Some(value) = length(value, em, rem, allow_auto, allow_negative) else {
+    let Some(value) = length(value, em, rem, viewport, allow_auto, allow_negative) else {
         return;
     };
     match property.strip_prefix(prefix) {
@@ -405,14 +571,162 @@ impl ComputedStyle {
         }
     }
 
-    fn apply(&mut self, declaration: &Declaration, parent_font: f32, root_font: f32) {
+    fn apply(
+        &mut self,
+        declaration: &Declaration,
+        parent_font: f32,
+        root_font: f32,
+        viewport: crate::values::Viewport,
+    ) {
         let lower = declaration.value.to_ascii_lowercase();
         let value = lower.as_str();
         let font_size = self.font_size;
         let unit = |part: &str, auto: bool, negative: bool| {
-            length(part, font_size, root_font, auto, negative)
+            length(part, font_size, root_font, viewport, auto, negative)
         };
         match declaration.name.as_str() {
+            "flex-direction" => match value {
+                "row" => self.flex_direction = crate::flex::FlexDirection::Row,
+                "row-reverse" => self.flex_direction = crate::flex::FlexDirection::RowReverse,
+                "column" => self.flex_direction = crate::flex::FlexDirection::Column,
+                "column-reverse" => self.flex_direction = crate::flex::FlexDirection::ColumnReverse,
+                _ => {}
+            },
+            "flex-wrap" => match value {
+                "nowrap" => self.flex_wrap = crate::flex::FlexWrap::NoWrap,
+                "wrap" => self.flex_wrap = crate::flex::FlexWrap::Wrap,
+                "wrap-reverse" => self.flex_wrap = crate::flex::FlexWrap::WrapReverse,
+                _ => {}
+            },
+            "flex-grow" | "flex-shrink" => {
+                if let Some(factor) = flex_factor(value) {
+                    if declaration.name == "flex-grow" {
+                        self.flex_grow = factor;
+                    } else {
+                        self.flex_shrink = factor;
+                    }
+                }
+            }
+            "flex-basis" => {
+                if let Some(basis) = if value == "content" {
+                    Some(Length::MaxContent)
+                } else {
+                    sizing_length(value, unit)
+                } {
+                    self.flex_basis = basis;
+                }
+            }
+            "flex" => {
+                if let Some((grow, shrink, basis)) = flex_shorthand(value, unit) {
+                    self.flex_grow = grow;
+                    self.flex_shrink = shrink;
+                    self.flex_basis = basis;
+                }
+            }
+            "order" => {
+                if let Ok(order) = value.parse::<i32>()
+                    && (-32_768..=32_767).contains(&order)
+                {
+                    self.order = order;
+                }
+            }
+            "gap" => {
+                if let Some(parts) = crate::values::components(value)
+                    && matches!(parts.len(), 1 | 2)
+                {
+                    let gap = |v| {
+                        if v == "normal" {
+                            Some(Length::Px(0.0))
+                        } else {
+                            unit(v, false, false)
+                        }
+                    };
+                    if let (Some(row), Some(column)) = (
+                        gap(parts[0]),
+                        gap(parts.get(1).copied().unwrap_or(parts[0])),
+                    ) {
+                        self.row_gap = row;
+                        self.column_gap = column;
+                    }
+                }
+            }
+            "row-gap" | "column-gap" => {
+                if let Some(gap) = if value == "normal" {
+                    Some(Length::Px(0.0))
+                } else {
+                    unit(value, false, false)
+                } {
+                    if declaration.name == "row-gap" {
+                        self.row_gap = gap;
+                    } else {
+                        self.column_gap = gap;
+                    }
+                }
+            }
+            "justify-content" | "align-content" | "align-items" | "align-self"
+            | "justify-items" | "justify-self" => {
+                if let Some(align) = Alignment::parse(value) {
+                    let content = declaration.name.ends_with("content");
+                    let distribution = matches!(
+                        align,
+                        Alignment::SpaceBetween | Alignment::SpaceAround | Alignment::SpaceEvenly
+                    );
+                    let auto = align == Alignment::Auto;
+                    if (content && !auto && align != Alignment::Baseline)
+                        || (!content
+                            && !distribution
+                            && (!auto || declaration.name.ends_with("self")))
+                    {
+                        match declaration.name.as_str() {
+                            "justify-content" => self.justify_content = align,
+                            "align-content" => self.align_content = align,
+                            "align-items" => self.align_items = align,
+                            "align-self" => self.align_self = align,
+                            "justify-items" => self.justify_items = align,
+                            _ => self.justify_self = align,
+                        }
+                    }
+                }
+            }
+            "grid-template-columns"
+            | "grid-template-rows"
+            | "grid-auto-columns"
+            | "grid-auto-rows" => {
+                if let Some(tracks) =
+                    crate::grid::parse_tracks(value, |part| unit(part, false, false))
+                {
+                    match declaration.name.as_str() {
+                        "grid-template-columns" => self.grid_template_columns = tracks,
+                        "grid-template-rows" => self.grid_template_rows = tracks,
+                        "grid-auto-columns" => self.grid_auto_columns = tracks,
+                        _ => self.grid_auto_rows = tracks,
+                    }
+                }
+            }
+            "grid-auto-flow" => match value {
+                "row" => self.grid_auto_flow = crate::grid::GridAutoFlow::Row,
+                "column" => self.grid_auto_flow = crate::grid::GridAutoFlow::Column,
+                _ => {}
+            },
+            "grid-column" | "grid-row" => {
+                if let Some(pair) = crate::grid::parse_placement(value) {
+                    if declaration.name == "grid-column" {
+                        self.grid_column = pair;
+                    } else {
+                        self.grid_row = pair;
+                    }
+                }
+            }
+            "grid-column-start" | "grid-column-end" | "grid-row-start" | "grid-row-end" => {
+                if let Some(line) = crate::grid::parse_line(value) {
+                    match declaration.name.as_str() {
+                        "grid-column-start" => self.grid_column.start = line,
+                        "grid-column-end" => self.grid_column.end = line,
+                        "grid-row-start" => self.grid_row.start = line,
+                        _ => self.grid_row.end = line,
+                    }
+                }
+            }
             "list-style-type" | "list-style" => match value {
                 "disc" => self.list_style_type = ListStyleType::Disc,
                 "decimal" => self.list_style_type = ListStyleType::Decimal,
@@ -423,6 +737,10 @@ impl ComputedStyle {
                 "block" => self.display = Display::Block,
                 "inline" => self.display = Display::Inline,
                 "inline-block" => self.display = Display::InlineBlock,
+                "flex" => self.display = Display::Flex,
+                "inline-flex" => self.display = Display::InlineFlex,
+                "grid" => self.display = Display::Grid,
+                "inline-grid" => self.display = Display::InlineGrid,
                 "none" => self.display = Display::None,
                 _ => {}
             },
@@ -443,10 +761,12 @@ impl ComputedStyle {
                 }
             }
             "inset" => {
-                let offsets: Option<Vec<_>> = value
-                    .split_ascii_whitespace()
-                    .map(|part| unit(part, true, true))
-                    .collect();
+                let offsets: Option<Vec<_>> = crate::values::components(value).and_then(|parts| {
+                    parts
+                        .into_iter()
+                        .map(|part| unit(part, true, true))
+                        .collect()
+                });
                 if let Some(offsets) = offsets.and_then(|values| Edges::shorthand(&values)) {
                     self.insets = offsets;
                 }
@@ -485,10 +805,41 @@ impl ComputedStyle {
             "background" | "background-color" => {
                 if let Some(color) = Color::parse(value) {
                     self.background = Some(color);
+                    if declaration.name == "background" {
+                        self.background_gradient = None;
+                    }
+                } else if declaration.name == "background" {
+                    if value == "none" {
+                        self.background = None;
+                        self.background_gradient = None;
+                    } else if let Some(gradient) =
+                        crate::effects::parse_gradient(value, &mut |part| unit(part, false, true))
+                    {
+                        self.background = None;
+                        self.background_gradient = Some(gradient);
+                    }
+                }
+            }
+            "background-image" => {
+                if value == "none" {
+                    self.background_gradient = None;
+                } else if let Some(gradient) =
+                    crate::effects::parse_gradient(value, &mut |part| unit(part, false, true))
+                {
+                    self.background_gradient = Some(gradient);
+                }
+            }
+            "box-shadow" => {
+                if let Some(shadows) =
+                    crate::effects::parse_shadows(value, self.color, &mut |part| {
+                        unit(part, false, true)
+                    })
+                {
+                    self.box_shadows = shadows;
                 }
             }
             "font-size" => {
-                if let Some(size) = length(value, parent_font, root_font, false, false)
+                if let Some(size) = length(value, parent_font, root_font, viewport, false, false)
                     .and_then(|length| length.resolve(parent_font))
                     .filter(|size| (1.0..=1024.0).contains(size))
                 {
@@ -506,38 +857,42 @@ impl ComputedStyle {
             "width" => {
                 if value == "auto" {
                     self.width = None;
-                } else if let Some(size) = unit(value, false, false) {
+                    self.width_declared = true;
+                } else if let Some(size) = sizing_length(value, unit) {
                     self.width = Some(size);
+                    self.width_declared = true;
                 }
             }
             "height" => {
                 if value == "auto" {
                     self.height = None;
-                } else if let Some(size) = unit(value, false, false) {
+                    self.height_declared = true;
+                } else if let Some(size) = sizing_length(value, unit) {
                     self.height = Some(size);
+                    self.height_declared = true;
                 }
             }
             "min-width" => {
-                if let Some(size) = unit(value, false, false) {
+                if let Some(size) = sizing_length(value, unit) {
                     self.min_width = Some(size);
                 }
             }
             "max-width" => {
                 if value == "none" {
                     self.max_width = None;
-                } else if let Some(size) = unit(value, false, false) {
+                } else if let Some(size) = sizing_length(value, unit) {
                     self.max_width = Some(size);
                 }
             }
             "min-height" => {
-                if let Some(size) = unit(value, false, false) {
+                if let Some(size) = sizing_length(value, unit) {
                     self.min_height = Some(size);
                 }
             }
             "max-height" => {
                 if value == "none" {
                     self.max_height = None;
-                } else if let Some(size) = unit(value, false, false) {
+                } else if let Some(size) = sizing_length(value, unit) {
                     self.max_height = Some(size);
                 }
             }
@@ -552,7 +907,7 @@ impl ComputedStyle {
                     name,
                     value,
                     "margin",
-                    (self.font_size, root_font),
+                    (self.font_size, root_font, viewport),
                     (true, true),
                 );
             }
@@ -562,7 +917,7 @@ impl ComputedStyle {
                     name,
                     value,
                     "padding",
-                    (self.font_size, root_font),
+                    (self.font_size, root_font, viewport),
                     (false, false),
                 );
             }
@@ -571,7 +926,7 @@ impl ComputedStyle {
                 "border-width",
                 value,
                 "border-width",
-                (self.font_size, root_font),
+                (self.font_size, root_font, viewport),
                 (false, false),
             ),
             "border-top-width"
@@ -584,7 +939,7 @@ impl ComputedStyle {
                         side,
                         value,
                         "border",
-                        (self.font_size, root_font),
+                        (self.font_size, root_font, viewport),
                         (false, false),
                     );
                 }
@@ -605,31 +960,58 @@ impl ComputedStyle {
                 }
             }
             "border" => {
-                for part in value.split_ascii_whitespace() {
+                let Some(parts) = crate::values::components(value) else {
+                    return;
+                };
+                let mut parsed = self.clone();
+                let mut width_seen = false;
+                let mut color_seen = false;
+                let mut style_seen = false;
+                for part in parts {
                     if let Some(width) = unit(part, false, false) {
-                        self.border_width = Edges::shorthand(&[width]).unwrap();
+                        if width_seen {
+                            return;
+                        }
+                        width_seen = true;
+                        parsed.border_width = Edges::shorthand(&[width]).unwrap();
                     } else if let Some(color) = Color::parse(part) {
-                        self.border_color = color;
-                        self.border_color_explicit = true;
+                        if color_seen {
+                            return;
+                        }
+                        color_seen = true;
+                        parsed.border_color = color;
+                        parsed.border_color_explicit = true;
                     } else if part == "currentcolor" {
-                        self.border_color_explicit = false;
+                        if color_seen {
+                            return;
+                        }
+                        color_seen = true;
+                        parsed.border_color_explicit = false;
                     } else {
+                        if style_seen {
+                            return;
+                        }
+                        style_seen = true;
                         match part {
-                            "solid" => self.border_style = BorderStyle::Solid,
-                            "dashed" => self.border_style = BorderStyle::Dashed,
-                            "dotted" => self.border_style = BorderStyle::Dotted,
-                            "none" => self.border_style = BorderStyle::None,
-                            _ => {}
+                            "solid" => parsed.border_style = BorderStyle::Solid,
+                            "dashed" => parsed.border_style = BorderStyle::Dashed,
+                            "dotted" => parsed.border_style = BorderStyle::Dotted,
+                            "none" => parsed.border_style = BorderStyle::None,
+                            _ => return,
                         }
                     }
                 }
+                self.border_width = parsed.border_width;
+                self.border_color = parsed.border_color;
+                self.border_color_explicit = parsed.border_color_explicit;
+                self.border_style = parsed.border_style;
             }
             "border-radius" => apply_edges(
                 &mut self.border_radius,
                 "border-radius",
                 value,
                 "border-radius",
-                (self.font_size, root_font),
+                (self.font_size, root_font, viewport),
                 (false, false),
             ),
             "line-height" => {
@@ -767,8 +1149,11 @@ fn compute_node(
     id: NodeId,
     inherited: &ComputedStyle,
     root_font: f32,
+    work: &mut CascadeWork,
 ) {
+    let viewport = work.viewport;
     let mut style = ComputedStyle::inherit(inherited);
+    work.charge(1);
     if let Some(element) = document.element(id) {
         user_agent_style(&element.tag, &mut style);
         if let Some(direction) = element.attribute("dir") {
@@ -784,88 +1169,94 @@ fn compute_node(
         // Author declarations are ordered by importance, style attributes,
         // selector specificity, then their exact order in the source.
         let mut matched = Vec::new();
-        for (order, rule) in sheet.rules.iter().enumerate() {
+        for active in 0..work.active_rules.len() {
+            let order = work.active_rules[active];
+            let rule = &sheet.rules[order];
+            if !work.charge(1) {
+                break;
+            }
+            let mut specificity: Option<(usize, usize, usize)> = None;
             for selector in &rule.selectors {
-                if selector.matches(document, id) {
-                    for (declaration_order, declaration) in rule.declarations.iter().enumerate() {
-                        matched.push((
-                            declaration.important,
-                            0u8,
-                            selector.specificity,
-                            order,
-                            declaration_order,
-                            declaration,
-                        ));
+                match selector.matches_bounded(document, id, &mut work.remaining) {
+                    Some(true) => {
+                        specificity = Some(
+                            specificity
+                                .map_or(selector.specificity, |old| old.max(selector.specificity)),
+                        )
+                    }
+                    Some(false) => {}
+                    None => {
+                        work.truncated = true;
+                        break;
                     }
                 }
             }
+            if let Some(specificity) = specificity {
+                for (declaration_order, declaration) in rule.declarations.iter().enumerate() {
+                    if !work.charge(1 + declaration.name.len() + declaration.value.len()) {
+                        break;
+                    }
+                    matched.push((
+                        declaration.important,
+                        0u8,
+                        specificity,
+                        order,
+                        declaration_order,
+                        declaration,
+                    ));
+                }
+            }
         }
-        if let Some(inline) = element.attribute("style") {
-            let declarations = css::parse_declarations(inline);
-            for (declaration_order, declaration) in declarations.iter().enumerate() {
-                matched.push((
-                    declaration.important,
-                    1u8,
-                    (0, 0, 0),
-                    sheet.rules.len(),
-                    declaration_order,
-                    declaration,
-                ));
-            }
-            matched.sort_by_key(
-                |(important, attribute, specificity, rule_order, declaration_order, _)| {
-                    (
-                        *important,
-                        *attribute,
-                        *specificity,
-                        *rule_order,
-                        *declaration_order,
-                    )
-                },
-            );
-            // Resolve the cascaded font size before properties whose em or
-            // percentage values depend on it, regardless of declaration order.
-            for (_, _, _, _, _, declaration) in &matched {
-                if declaration.name == "font-size" {
-                    style.apply(declaration, inherited.font_size, root_font);
-                }
-            }
-            let property_root_font = if element.tag == "html" {
-                style.font_size
-            } else {
-                root_font
-            };
-            for (_, _, _, _, _, declaration) in matched {
-                if declaration.name != "font-size" {
-                    style.apply(declaration, inherited.font_size, property_root_font);
-                }
-            }
+        let inline = element.attribute("style").unwrap_or("");
+        let (declarations, truncated) = if inline.is_empty() {
+            (Vec::new(), false)
+        } else if work.charge(inline.len()) {
+            css::parse_declarations_with_status(inline)
         } else {
-            matched.sort_by_key(
-                |(important, attribute, specificity, rule_order, declaration_order, _)| {
-                    (
-                        *important,
-                        *attribute,
-                        *specificity,
-                        *rule_order,
-                        *declaration_order,
-                    )
-                },
-            );
-            for (_, _, _, _, _, declaration) in &matched {
-                if declaration.name == "font-size" {
-                    style.apply(declaration, inherited.font_size, root_font);
-                }
+            (Vec::new(), true)
+        };
+        work.truncated |= truncated;
+        for (declaration_order, declaration) in declarations.iter().enumerate() {
+            matched.push((
+                declaration.important,
+                1u8,
+                (0, 0, 0),
+                sheet.rules.len(),
+                declaration_order,
+                declaration,
+            ));
+        }
+        matched.sort_by_key(
+            |(important, attribute, specificity, rule_order, declaration_order, _)| {
+                (
+                    *important,
+                    *attribute,
+                    *specificity,
+                    *rule_order,
+                    *declaration_order,
+                )
+            },
+        );
+        // Relative values and currentcolor use their cascaded environment,
+        // independently of their declarations' order.
+        for (_, _, _, _, _, declaration) in &matched {
+            if declaration.name == "font-size" || declaration.name == "color" {
+                style.apply(declaration, inherited.font_size, root_font, viewport);
             }
-            let property_root_font = if element.tag == "html" {
-                style.font_size
-            } else {
-                root_font
-            };
-            for (_, _, _, _, _, declaration) in matched {
-                if declaration.name != "font-size" {
-                    style.apply(declaration, inherited.font_size, property_root_font);
-                }
+        }
+        let property_root_font = if element.tag == "html" {
+            style.font_size
+        } else {
+            root_font
+        };
+        for (_, _, _, _, _, declaration) in matched {
+            if declaration.name != "font-size" && declaration.name != "color" {
+                style.apply(
+                    declaration,
+                    inherited.font_size,
+                    property_root_font,
+                    viewport,
+                );
             }
         }
     }
@@ -873,7 +1264,12 @@ fn compute_node(
         style.border_color = style.color;
     }
     if style.position == Position::Absolute && style.display != Display::None {
-        style.display = Display::Block;
+        style.display = match style.display {
+            Display::InlineFlex => Display::Flex,
+            Display::InlineGrid => Display::Grid,
+            Display::Flex | Display::Grid => style.display,
+            _ => Display::Block,
+        };
     }
     styles[id] = style.clone();
     let root_font = if document
@@ -884,13 +1280,90 @@ fn compute_node(
     } else {
         root_font
     };
+    if matches!(document.nodes[id].kind, NodeKind::TemplateContent)
+        || document.element(id).is_some_and(|e| e.tag == "template")
+    {
+        return;
+    }
     for &child in &document.nodes[id].children {
-        compute_node(document, sheet, styles, child, &style, root_font);
+        compute_node(document, sheet, styles, child, &style, root_font, work);
     }
 }
 
 pub fn compute(document: &Document, sheet: &Stylesheet) -> Vec<ComputedStyle> {
+    compute_with_viewport(document, sheet, crate::values::Viewport::default())
+}
+
+/// Aggregate selector, ancestor, declaration-byte and inline parsing work.
+pub const MAX_CASCADE_WORK: usize = 8_000_000;
+
+struct CascadeWork {
+    remaining: usize,
+    truncated: bool,
+    viewport: crate::values::Viewport,
+    active_rules: Vec<usize>,
+}
+impl CascadeWork {
+    fn charge(&mut self, amount: usize) -> bool {
+        if amount > self.remaining {
+            self.remaining = 0;
+            self.truncated = true;
+            false
+        } else {
+            self.remaining -= amount;
+            true
+        }
+    }
+}
+
+pub struct ComputedStyles {
+    pub styles: Vec<ComputedStyle>,
+    pub truncated: bool,
+}
+
+pub fn compute_with_viewport(
+    document: &Document,
+    sheet: &Stylesheet,
+    viewport: crate::values::Viewport,
+) -> Vec<ComputedStyle> {
+    compute_with_status(document, sheet, viewport).styles
+}
+
+/// Exhaustion leaves the deterministically accepted author prefix, with inherited
+/// and user-agent defaults for later nodes, and reports omitted work explicitly.
+pub fn compute_with_status(
+    document: &Document,
+    sheet: &Stylesheet,
+    viewport: crate::values::Viewport,
+) -> ComputedStyles {
     let mut styles = vec![ComputedStyle::default(); document.nodes.len()];
+    let mut work = CascadeWork {
+        remaining: MAX_CASCADE_WORK,
+        truncated: false,
+        viewport,
+        active_rules: Vec::new(),
+    };
+    // Every node sees the same viewport, so conditions are evaluated once,
+    // retaining their original rule indices for the existing cascade.
+    for (index, rule) in sheet.rules.iter().enumerate() {
+        let cost = 1 + rule
+            .media
+            .iter()
+            .map(|list| {
+                1 + list
+                    .alternatives
+                    .iter()
+                    .map(|query| 1 + query.constraints.len())
+                    .sum::<usize>()
+            })
+            .sum::<usize>();
+        if !work.charge(cost) {
+            break;
+        }
+        if rule.is_active(viewport.width) {
+            work.active_rules.push(index);
+        }
+    }
     compute_node(
         document,
         sheet,
@@ -898,8 +1371,12 @@ pub fn compute(document: &Document, sheet: &Stylesheet) -> Vec<ComputedStyle> {
         0,
         &ComputedStyle::default(),
         16.0,
+        &mut work,
     );
-    styles
+    ComputedStyles {
+        styles,
+        truncated: work.truncated || sheet.truncated,
+    }
 }
 
 pub fn is_visible(document: &Document, styles: &[ComputedStyle], node: NodeId) -> bool {
