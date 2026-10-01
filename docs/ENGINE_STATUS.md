@@ -256,9 +256,9 @@ The ignored diagnostics remain `inventory_upstream_tokenizer`,
 Corpus files, case counts and expectations above are unchanged.
 
 The pushed engine commit
-[`3d195d7`](https://github.com/saudaljuaid/Scarlite/commit/3d195d74e2184bc4a26e2a99badf13998e31ad47)
+[`3d195d7`](https://github.com/saudaljuaid/inkbird/commit/3d195d74e2184bc4a26e2a99badf13998e31ad47)
 was verified in completed
-[CI run 36820825014](https://github.com/saudaljuaid/Scarlite/actions/runs/36820825014)
+[CI run 36820825014](https://github.com/saudaljuaid/inkbird/actions/runs/36820825014)
 on 1 October 2026. The actual job logs confirm successful formatting,
 all-target Clippy with warnings denied, and **367 passed, zero failed, three
 ignored** in the locked suite, with the same group counts and diagnostic names
@@ -292,6 +292,7 @@ parser step remains the independent diagnostic reconciliation described above.
 | `src/main.rs` | `scarlite` CLI |
 | `examples/welcome.html` | Small sample document |
 | `assets/logo.webp` | Scarlite logo |
+| `assets/inkbird.jpg` | Current Inkbird purple emblem |
 | `tests/upstream` | Pinned upstream parser corpora |
 | `tools/generate_named_references.py` | Regenerate the WHATWG named-reference table |
 

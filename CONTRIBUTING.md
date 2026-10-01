@@ -1,6 +1,6 @@
-# Contributing to Scarlite
+# Contributing to Inkbird
 
-Thanks for helping improve Scarlite and Phos.
+Thanks for helping improve Inkbird and Phos.
 
 1. Check existing issues before starting a substantial change. Open an issue to discuss a new feature or a change in direction.
 2. Keep pull requests focused. Explain what changed, why it changed, and how you tested it.

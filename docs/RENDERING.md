@@ -1,7 +1,8 @@
 # Phos static responsive layout
 
-Phos is the bounded backend for the later Scarlite UI. This milestone adds a
-shared intrinsic-sizing foundation, horizontal Flexbox and Grid, width-based
+Phos is Inkbird's headless bounded backend for the native Scarlite-UI host.
+This milestone adds a shared intrinsic-sizing foundation, horizontal Flexbox
+and Grid, width-based
 responsive CSS, viewport lengths and calculations, linear gradients and outer
 shadows. It does not add an application, browser window, live DOM or runtime.
 This is a substantial supported subset, not HTML/CSS/browser conformance.

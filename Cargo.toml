@@ -3,8 +3,8 @@ name = "scarlite"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "Scarlite browser project and Phos rendering engine"
-repository = "https://github.com/saudaljuaid/Scarlite"
+description = "Inkbird browser project and Phos rendering engine"
+repository = "https://github.com/saudaljuaid/inkbird"
 readme = "README.md"
 
 [dependencies]
