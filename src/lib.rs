@@ -6,6 +6,7 @@ pub mod grid;
 pub mod html;
 pub mod intrinsic;
 pub mod layout;
+mod loaded;
 pub mod network;
 pub mod paint;
 mod paragraph;
@@ -24,6 +25,7 @@ use std::path::Path;
 
 use dom::{Document, NodeKind};
 use layout::ImageSource;
+pub use loaded::{LoadedDocument, RenderTimings};
 use network::Client;
 use url::Url;
 pub use values::Viewport;
