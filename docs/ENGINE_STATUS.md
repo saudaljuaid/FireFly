@@ -253,10 +253,18 @@ zero tests.
 
 The ignored diagnostics remain `inventory_upstream_tokenizer`,
 `inventory_upstream_document_trees`, and `inventory_upstream_fragments`.
-Corpus files, case counts and expectations above are unchanged. Completed
-pushed CI results are recorded after delivery verification; a pending run is
-not a verified result. Local checks use Linux Rust 1.98.1 under WSL; Windows
-MSVC lacks its linker.
+Corpus files, case counts and expectations above are unchanged.
+
+The pushed engine commit
+[`3d195d7`](https://github.com/saudaljuaid/Scarlite/commit/3d195d74e2184bc4a26e2a99badf13998e31ad47)
+was verified in completed
+[CI run 36820825014](https://github.com/saudaljuaid/Scarlite/actions/runs/36820825014)
+on 1 October 2026. The actual job logs confirm successful formatting,
+all-target Clippy with warnings denied, and **367 passed, zero failed, three
+ignored** in the locked suite, with the same group counts and diagnostic names
+above. Both CI and local checks use Linux Rust 1.98.1; local checks run under
+WSL because Windows MSVC lacks its linker. No dependency or workflow change
+was needed.
 Browser/performance evidence and honest differences are in
 [BROWSER_COMPARISON.md](BROWSER_COMPARISON.md).
 
